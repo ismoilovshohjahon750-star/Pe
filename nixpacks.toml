@@ -1,0 +1,19 @@
+[phases.setup]
+nixPkgs = [
+  "xvfb-run",
+  "xorg-server",
+  "openbox",
+  "tint2",
+  "pcmanfm",
+  "xfce4-terminal",
+  "mousepad",
+  "galculator",
+  "chromium",
+  "xdotool",
+  "scrot",
+  "ffmpeg",
+  "dbus",
+  "adwaita-icon-theme",
+  "shared-mime-info",
+  "dejavu_fonts"
+]
