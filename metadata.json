@@ -1,0 +1,6 @@
+{
+  "name": "ClaudeWin 10 Pro",
+  "description": "Real-time Windows 10 Pro desktop environment controlled by Claude AI via Model Context Protocol (MCP) with live WebSocket screen observation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
