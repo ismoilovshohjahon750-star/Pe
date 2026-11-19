@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: claudewin-linux-mcp
+    env: docker
+    region: oregon
+    plan: standard
+    envVars:
+      - key: PORT
+        value: 3000

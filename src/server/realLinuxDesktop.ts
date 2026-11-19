@@ -67,16 +67,27 @@ class RealLinuxDesktopManager {
   async checkInstalled(): Promise<boolean> {
     try {
       await execAsync('which Xvfb openbox xdotool ffmpeg');
-      this.status = { ...this.status, available: true };
+      this.status = { ...this.status, available: true, error: null };
       return true;
     } catch {
-      this.status = {
-        ...this.status,
-        available: false,
-        running: false,
-        error: 'Xvfb / openbox / xdotool / ffmpeg not installed in container',
-      };
-      return false;
+      try {
+        console.log('Xvfb/openbox/xdotool/ffmpeg not found. Attempting automatic apt-get installation...');
+        await execAsync(
+          'export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y xvfb openbox tint2 pcmanfm xfce4-terminal mousepad galculator chromium xdotool scrot ffmpeg dbus-x11 adwaita-icon-theme x11-utils fonts-dejavu-core',
+        );
+        await execAsync('which Xvfb openbox xdotool ffmpeg');
+        this.status = { ...this.status, available: true, error: null };
+        console.log('Successfully auto-installed X11 desktop packages!');
+        return true;
+      } catch (installErr) {
+        this.status = {
+          ...this.status,
+          available: false,
+          running: false,
+          error: `Xvfb / openbox / xdotool / ffmpeg not installed and auto-install failed: ${(installErr as Error).message}`,
+        };
+        return false;
+      }
     }
   }
 
