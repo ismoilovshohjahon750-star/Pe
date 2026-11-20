@@ -70,13 +70,18 @@ export function resolveMcpExecutionMode(
     'desktop_screenshot',
     'desktop_move',
     'desktop_click',
+    'desktop_scroll',
     'desktop_type',
     'desktop_key',
+    'open_app',
+    'browser_navigate',
     'run_powershell',
+    'run_bash',
     'file_list',
     'file_read',
     'file_write',
     'file_delete',
+    'wait',
   ]);
 
   const linuxCapableTools = new Set([

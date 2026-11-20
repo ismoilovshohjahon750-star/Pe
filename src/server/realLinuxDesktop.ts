@@ -73,7 +73,8 @@ class RealLinuxDesktopManager {
       try {
         console.log('Xvfb/openbox/xdotool/ffmpeg not found. Attempting automatic apt-get installation...');
         await execAsync(
-          'export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y xvfb openbox tint2 pcmanfm xfce4-terminal mousepad galculator chromium xdotool scrot ffmpeg dbus-x11 adwaita-icon-theme x11-utils fonts-dejavu-core',
+          'export DEBIAN_FRONTEND=noninteractive && (dpkg --configure -a || true) && apt-get update && apt-get install -y --fix-broken xvfb openbox tint2 pcmanfm xfce4-terminal mousepad galculator chromium xdotool scrot ffmpeg dbus-x11 adwaita-icon-theme x11-utils fonts-dejavu-core',
+          { maxBuffer: 8 * 1024 * 1024, timeout: 300000 },
         );
         await execAsync('which Xvfb openbox xdotool ffmpeg');
         this.status = { ...this.status, available: true, error: null };

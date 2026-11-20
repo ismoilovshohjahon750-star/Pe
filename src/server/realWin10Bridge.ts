@@ -131,8 +131,10 @@ class RealWin10Bridge {
     ws.on('close', () => {
       if (this.agentSocket === ws) {
         this.agentSocket = null;
+        this.latestFrame = null;
         this.status = createInitialRealAgentStatus();
         this.emitStatus();
+        this.setExecutionTarget('linux');
         for (const [reqId, waiter] of this.pending.entries()) {
           clearTimeout(waiter.timer);
           waiter.reject(new Error('Real Windows 10 Pro agent disconnected'));

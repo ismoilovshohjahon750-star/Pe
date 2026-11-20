@@ -522,6 +522,13 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
     }
 
     if (mode === 'real-win10') {
+      if (name === 'wait') {
+        const ms = Math.max(100, Math.min(10000, Number(args.ms ?? 1000)));
+        await new Promise((r) => setTimeout(r, ms));
+        const msg = `Waited ${ms}ms`;
+        desktopStore.logActivity('mcp', name, 'real-win10', msg, 'ok', Date.now() - started);
+        return { content: [{ type: 'text', text: msg }] };
+      }
       if (name === 'desktop_screenshot') {
         const frame = realWin10Bridge.getLatestFrame();
         const status = realWin10Bridge.getStatus();

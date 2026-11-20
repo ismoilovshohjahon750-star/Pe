@@ -533,6 +533,23 @@ async function startServer() {
                 });
               }
               break;
+            case 'user:real_scroll':
+              if (realWin10Bridge.getStatus().connected) {
+                await realWin10Bridge.executeOnAgent('desktop_scroll', {
+                  x: Number(msg.x ?? 640),
+                  y: Number(msg.y ?? 360),
+                  direction: Number(msg.deltaY ?? 0) > 0 ? 'down' : 'up',
+                  clicks: 3,
+                });
+              }
+              break;
+            case 'user:real_key':
+              if (realWin10Bridge.getStatus().connected) {
+                await realWin10Bridge.executeOnAgent('desktop_key', {
+                  key: String(msg.key ?? 'Enter'),
+                });
+              }
+              break;
             case 'user:linux_move':
               await realLinuxDesktop.moveMouse(Number(msg.x ?? 0), Number(msg.y ?? 0));
               break;

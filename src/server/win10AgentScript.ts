@@ -25,6 +25,7 @@ public class Win32Input {
     public const uint MOUSEEVENTF_LEFTUP = 0x0004;
     public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    public const uint MOUSEEVENTF_WHEEL = 0x0800;
 }
 "@
 
@@ -64,7 +65,7 @@ function Invoke-AgentTool($msg) {
     switch ($tool) {
         "desktop_screenshot" {
             $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            return @{ width = $bounds.Width; height = $bounds.Height; note = "Captured live real Windows 10 Pro frame" }
+            return @{ width = $bounds.Width; height = $bounds.Height; note = "Captured live real Windows PC frame" }
         }
         "desktop_move" {
             [Win32Input]::SetCursorPos([int]$a.x, [int]$a.y) | Out-Null
@@ -88,6 +89,15 @@ function Invoke-AgentTool($msg) {
             }
             return "Clicked $($a.button) at ($($a.x), $($a.y))"
         }
+        "desktop_scroll" {
+            $sx = if ($null -ne $a.x) { [int]$a.x } else { 640 }
+            $sy = if ($null -ne $a.y) { [int]$a.y } else { 360 }
+            [Win32Input]::SetCursorPos($sx, $sy) | Out-Null
+            $clicks = if ($null -ne $a.clicks) { [int]$a.clicks } else { 3 }
+            $delta = if ($a.direction -eq "up") { 120 * $clicks } else { -120 * $clicks }
+            [Win32Input]::mouse_event([Win32Input]::MOUSEEVENTF_WHEEL, 0, 0, [uint32]([BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$delta), 0)), [UIntPtr]::Zero)
+            return "Scrolled $($a.direction) at ($sx, $sy)"
+        }
         "desktop_type" {
             $txt = [string]$a.text
             $escaped = $txt -replace '([+^%~(){}\\[\\]])', '{$1}'
@@ -97,10 +107,32 @@ function Invoke-AgentTool($msg) {
         }
         "desktop_key" {
             $k = [string]$a.key
-            $map = @{ "Enter" = "{ENTER}"; "Tab" = "{TAB}"; "Escape" = "{ESC}"; "Backspace" = "{BACKSPACE}"; "Ctrl+S" = "^s"; "Alt+F4" = "%{F4}"; "Win" = "^{ESC}" }
+            $map = @{ "Enter" = "{ENTER}"; "Return" = "{ENTER}"; "Tab" = "{TAB}"; "Escape" = "{ESC}"; "Backspace" = "{BACKSPACE}"; "Ctrl+S" = "^s"; "Ctrl+C" = "^c"; "Ctrl+V" = "^v"; "Alt+F4" = "%{F4}"; "Win" = "^{ESC}" }
             $send = if ($map.ContainsKey($k)) { $map[$k] } else { $k }
             [System.Windows.Forms.SendKeys]::SendWait($send)
             return "Sent key $k"
+        }
+        "open_app" {
+            $app = ([string]$a.app).ToLower()
+            if ($a.command) {
+                Start-Process powershell -ArgumentList "-NoExit", "-Command", ([string]$a.command)
+                return "Started $($a.command)"
+            }
+            switch ($app) {
+                { $_ -in @("edge", "chromium", "chrome", "browser") } { Start-Process ([string]($a.url ?? "https://modelcontextprotocol.io")); return "Opened browser" }
+                { $_ -in @("notepad", "mousepad", "editor") } { Start-Process notepad ([string]$a.filePath); return "Opened Notepad" }
+                { $_ -in @("explorer", "files") } { Start-Process explorer ([string]$a.filePath); return "Opened Explorer" }
+                { $_ -in @("calculator", "calc") } { Start-Process calc; return "Opened Calculator" }
+                default { Start-Process powershell; return "Opened PowerShell" }
+            }
+        }
+        "browser_navigate" {
+            Start-Process ([string]$a.url)
+            return "Navigated to $($a.url)"
+        }
+        "run_bash" {
+            $out = Invoke-Expression ([string]$a.command) | Out-String
+            return $out
         }
         "run_powershell" {
             $out = Invoke-Expression ([string]$a.command) | Out-String
