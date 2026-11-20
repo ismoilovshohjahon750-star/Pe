@@ -1,11 +1,15 @@
 import { useState } from 'react';
-import { Check, Copy, Download, Monitor, Terminal, X } from 'lucide-react';
+import { Check, Copy, Download, Monitor, MonitorUp, Square, Terminal, X } from 'lucide-react';
 import type { ExecutionTarget, RealAgentStatus } from '../desktop/bridge.ts';
 
 interface PcConnectModalProps {
   open: boolean;
   status: RealAgentStatus;
   executionTarget: ExecutionTarget;
+  browserSharing: boolean;
+  shareError: string | null;
+  onStartBrowserShare: () => void;
+  onStopBrowserShare: () => void;
   onSwitchTarget: (target: ExecutionTarget) => void;
   onClose: () => void;
 }
@@ -14,20 +18,25 @@ export function PcConnectModal({
   open,
   status,
   executionTarget,
+  browserSharing,
+  shareError,
+  onStartBrowserShare,
+  onStopBrowserShare,
   onSwitchTarget,
   onClose,
 }: PcConnectModalProps) {
-  const [copied, setCopied] = useState(false);
+  const [copiedStep, setCopiedStep] = useState<string | null>(null);
 
   if (!open) return null;
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-  const psCommand = `irm "${origin}/api/real-win10-agent.ps1" | iex;`;
+  const pipCommand = 'pip install mss pillow pyautogui websockets';
+  const pyRunCommand = `python -c "import urllib.request,runpy; urllib.request.urlretrieve('${origin}/api/real-pc-agent.py','real-pc-agent.py'); runpy.run_path('real-pc-agent.py',run_name='__main__')"`;
 
-  const copyCommand = () => {
-    void navigator.clipboard?.writeText(psCommand);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+  const copyText = (key: string, text: string) => {
+    void navigator.clipboard?.writeText(text);
+    setCopiedStep(key);
+    setTimeout(() => setCopiedStep(null), 1800);
   };
 
   return (
@@ -47,7 +56,7 @@ export function PcConnectModal({
             <div>
               <h2 className="text-base font-semibold text-white">Haqiqiy PC ni ulash</h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                O‘z kompyuteringiz ekranini jonli ko‘rish va Claude AI MCP orqali boshqarish uchun ulang.
+                Kompyuteringiz ekranini jonli uzating yoki Python agent orqali to‘liq MCP boshqaruviga ulang.
               </p>
             </div>
           </div>
@@ -75,12 +84,12 @@ export function PcConnectModal({
               <div>
                 <div className="font-medium text-white">
                   {status.connected
-                    ? `Ulandi: ${status.hostname || 'Windows PC'} (${status.screenWidth}×${status.screenHeight})`
+                    ? `Ulandi: ${status.hostname || 'Real PC'} (${status.screenWidth}×${status.screenHeight})`
                     : 'Haqiqiy PC kutilmoqda (ulanmagan)'}
                 </div>
                 {status.connected && (
                   <div className="text-slate-400 mt-0.5">
-                    {status.osVersion || 'Windows'} · {status.username || 'User'} · {status.fps} FPS
+                    {status.osVersion || 'PC'} · {status.username || 'User'} · {status.fps} FPS
                   </div>
                 )}
               </div>
@@ -115,53 +124,117 @@ export function PcConnectModal({
             )}
           </div>
 
-          {/* PowerShell Command */}
+          {/* Option 1: Browser Screen Share (No scripts, no antivirus blocks) */}
+          <div className="p-4 bg-[#070B14] border border-sky-900/60 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="font-semibold text-white">
+                  1-usul: Brauzer orqali ekran ulashish (Tavsiya etiladi)
+                </div>
+                <p className="text-slate-400 mt-0.5">
+                  Hech qanday skript yoki dastursiz — Windows Defender bloklamaydi.
+                </p>
+              </div>
+              {browserSharing ? (
+                <button
+                  type="button"
+                  onClick={onStopBrowserShare}
+                  className="px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white font-semibold flex items-center gap-1.5 shrink-0"
+                >
+                  <Square className="w-3.5 h-3.5" />
+                  <span>Ulashishni to‘xtatish</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onStartBrowserShare}
+                  className="px-3.5 py-2 bg-[#0078D4] hover:bg-[#0063B1] text-white font-semibold flex items-center gap-1.5 shrink-0"
+                >
+                  <MonitorUp className="w-3.5 h-3.5" />
+                  <span>Ekranni ulashish</span>
+                </button>
+              )}
+            </div>
+            {shareError && (
+              <div className="text-rose-400 bg-rose-950/40 border border-rose-900/50 px-3 py-2">
+                {shareError}
+              </div>
+            )}
+          </div>
+
+          {/* Option 2: Python Agent for Full Control */}
           <div className="p-4 bg-[#070B14] border border-slate-800 space-y-3">
             <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 font-medium text-white">
+              <div className="flex items-center gap-2 font-semibold text-white">
                 <Terminal className="w-4 h-4 text-sky-400" />
-                <span>Windows PowerShell’da ishga tushiring</span>
+                <span>2-usul: To‘liq boshqaruv uchun Python Agent</span>
               </div>
-              <button
-                type="button"
-                onClick={copyCommand}
-                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1.5 shrink-0"
-              >
-                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copied ? 'Nusxalandi! 1 marta Ctrl+V qiling' : 'Buyruqni nusxalash'}</span>
-              </button>
-            </div>
-
-            <input
-              type="text"
-              readOnly
-              value={psCommand}
-              onClick={(e) => e.currentTarget.select()}
-              aria-label="PowerShell ulash buyrug'i"
-              className="w-full p-3 bg-slate-950 border border-slate-800 text-sky-300 font-mono-tabular text-xs focus:outline-none focus:border-sky-500"
-            />
-
-            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
-              <span>PowerShell’ga faqat 1 marta joylang (Ctrl+V) va Enter bosing.</span>
               <a
-                href="/api/real-win10-agent.ps1"
-                download="win10-claude-agent.ps1"
+                href="/api/real-pc-agent.py"
+                download="real-pc-agent.py"
                 className="inline-flex items-center gap-1.5 text-sky-400 hover:text-sky-300 font-medium"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>.ps1 skriptni yuklab olish</span>
+                <span>real-pc-agent.py yuklab olish</span>
               </a>
             </div>
-          </div>
+            <p className="text-slate-400">
+              PowerShell <span className="font-mono-tabular text-slate-300">irm | iex</span> Windows Defender
+              AMSI tomonidan bloklanadi. Sichqoncha, klaviatura va terminalni ham boshqarish uchun rasmiy
+              Python kutubxonalaridan foydalaning:
+            </p>
 
-          {/* What happens when connected */}
-          <div className="p-4 bg-slate-900/70 border border-slate-800 space-y-1.5 text-slate-300">
-            <div className="font-semibold text-white">Ulangandan keyin:</div>
-            <ul className="space-y-1 text-slate-400 list-disc list-inside">
-              <li>Kompyuteringiz ekrani real vaqtda shu saytda gorizontal ko‘rinishda chiqadi.</li>
-              <li>Claude AI MCP chaqiruvlari avtomatik ravishda haqiqiy kompyuteringizda bajariladi.</li>
-              <li>Agent yopilsa, ekran avtomatik ravishda yana serverdagi Linux desktopga qaytadi.</li>
-            </ul>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>1-qadam: Kutubxonalarni o‘rnatish</span>
+                <button
+                  type="button"
+                  onClick={() => copyText('pip', pipCommand)}
+                  className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1"
+                >
+                  {copiedStep === 'pip' ? (
+                    <Check className="w-3 h-3 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                  <span>{copiedStep === 'pip' ? 'Nusxalandi' : 'Nusxalash'}</span>
+                </button>
+              </div>
+              <input
+                type="text"
+                readOnly
+                value={pipCommand}
+                onClick={(e) => e.currentTarget.select()}
+                aria-label="Python kutubxonalarini o'rnatish buyrug'i"
+                className="w-full p-2.5 bg-slate-950 border border-slate-800 text-sky-300 font-mono-tabular text-xs focus:outline-none focus:border-sky-500"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>2-qadam: Agentni ishga tushirish</span>
+                <button
+                  type="button"
+                  onClick={() => copyText('run', pyRunCommand)}
+                  className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1"
+                >
+                  {copiedStep === 'run' ? (
+                    <Check className="w-3 h-3 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                  <span>{copiedStep === 'run' ? 'Nusxalandi' : 'Nusxalash'}</span>
+                </button>
+              </div>
+              <input
+                type="text"
+                readOnly
+                value={pyRunCommand}
+                onClick={(e) => e.currentTarget.select()}
+                aria-label="Python agentni ishga tushirish buyrug'i"
+                className="w-full p-2.5 bg-slate-950 border border-slate-800 text-sky-300 font-mono-tabular text-xs focus:outline-none focus:border-sky-500"
+              />
+            </div>
           </div>
         </div>
       </div>

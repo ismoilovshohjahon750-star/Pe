@@ -18,6 +18,7 @@ import {
 import { realLinuxDesktop } from './src/server/realLinuxDesktop.ts';
 import { realWin10Bridge } from './src/server/realWin10Bridge.ts';
 import { renderDesktopPngBase64 } from './src/server/screenshot.ts';
+import { buildPythonPcAgent } from './src/server/pcAgentPython.ts';
 import { buildWindows10AgentPs1 } from './src/server/win10AgentScript.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -113,6 +114,21 @@ async function startServer() {
     const script = buildWindows10AgentPs1(`${proto}://${host}/agent-ws`, token);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', 'inline; filename="win10-claude-agent.ps1"');
+    res.send(script);
+  });
+
+  app.get('/api/real-pc-agent.py', (req, res) => {
+    const fwdProto = String(req.headers['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    const proto = fwdProto === 'https' || req.protocol === 'https' ? 'wss' : 'ws';
+    const host = req.headers.host || `localhost:${PORT}`;
+    const state = desktopStore.getState();
+    const token = state.authEnabled ? desktopStore.getAuthToken() : null;
+    const script = buildPythonPcAgent(`${proto}://${host}/agent-ws`, token);
+    res.setHeader('Content-Type', 'text/x-python; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="real-pc-agent.py"');
     res.send(script);
   });
 
@@ -583,6 +599,15 @@ async function startServer() {
                 msg.payload as { filePath?: string; url?: string } | undefined,
               );
               break;
+            case 'browser_agent:hello':
+              realWin10Bridge.startBrowserShare(ws, msg);
+              break;
+            case 'browser_agent:frame':
+              realWin10Bridge.pushBrowserFrame(ws, msg);
+              break;
+            case 'browser_agent:stop':
+              realWin10Bridge.stopBrowserShare(ws);
+              break;
           }
         } catch {
           // ignore malformed WS frames
@@ -591,6 +616,7 @@ async function startServer() {
     });
 
     ws.on('close', () => {
+      realWin10Bridge.stopBrowserShare(ws);
       desktopStore.setViewerCount(wss.clients.size);
     });
   });

@@ -25,7 +25,11 @@ export default function App() {
   const [executionTarget, setExecutionTarget] = useState<ExecutionTarget>('linux');
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [pcModalOpen, setPcModalOpen] = useState(false);
+  const [browserSharing, setBrowserSharing] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const shareStreamRef = useRef<MediaStream | null>(null);
+  const shareTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -105,6 +109,8 @@ export default function App() {
     return () => {
       active = false;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (shareTimerRef.current) clearInterval(shareTimerRef.current);
+      shareStreamRef.current?.getTracks().forEach((t) => t.stop());
       wsRef.current?.close();
     };
   }, []);
@@ -115,6 +121,91 @@ export default function App() {
       ws.send(JSON.stringify(payload));
     }
   }, []);
+
+  const stopBrowserShare = useCallback(() => {
+    if (shareTimerRef.current) {
+      clearInterval(shareTimerRef.current);
+      shareTimerRef.current = null;
+    }
+    if (shareStreamRef.current) {
+      shareStreamRef.current.getTracks().forEach((t) => t.stop());
+      shareStreamRef.current = null;
+    }
+    setBrowserSharing(false);
+    sendWs({ type: 'browser_agent:stop' });
+  }, [sendWs]);
+
+  const startBrowserShare = useCallback(async () => {
+    setShareError(null);
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setShareError('Bu brauzer ekran ulashishni qo‘llab-quvvatlamaydi.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 5, max: 10 } },
+        audio: false,
+      });
+      stopBrowserShare();
+      shareStreamRef.current = stream;
+
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      await video.play();
+
+      const srcW = video.videoWidth || 1280;
+      const srcH = video.videoHeight || 720;
+      const scale = Math.min(1, 1280 / srcW);
+      const w = Math.max(320, Math.round(srcW * scale));
+      const h = Math.max(180, Math.round(srcH * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+
+      sendWs({
+        type: 'browser_agent:hello',
+        hostname: 'Brauzer Ekran Ulashish',
+        osVersion: navigator.platform || 'Windows',
+        username: 'PC',
+        screenWidth: w,
+        screenHeight: h,
+      });
+
+      const sendFrame = () => {
+        if (!ctx || video.readyState < 2) return;
+        ctx.drawImage(video, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+        const base64 = dataUrl.split(',')[1] || '';
+        if (base64) {
+          sendWs({
+            type: 'browser_agent:frame',
+            mimeType: 'image/jpeg',
+            width: w,
+            height: h,
+            data: base64,
+          });
+        }
+      };
+
+      sendFrame();
+      shareTimerRef.current = setInterval(sendFrame, 350);
+      setBrowserSharing(true);
+      setPcModalOpen(false);
+
+      const [track] = stream.getVideoTracks();
+      if (track) {
+        track.onended = () => {
+          stopBrowserShare();
+        };
+      }
+    } catch (err) {
+      const msg = (err as Error).message || 'Ekran ulashish bekor qilindi';
+      setShareError(msg);
+    }
+  }, [sendWs, stopBrowserShare]);
 
   const switchTarget = async (next: ExecutionTarget) => {
     setExecutionTarget(next);
@@ -177,6 +268,10 @@ export default function App() {
         open={pcModalOpen}
         status={realAgentStatus}
         executionTarget={executionTarget}
+        browserSharing={browserSharing}
+        shareError={shareError}
+        onStartBrowserShare={() => void startBrowserShare()}
+        onStopBrowserShare={stopBrowserShare}
         onSwitchTarget={(t) => void switchTarget(t)}
         onClose={() => setPcModalOpen(false)}
       />

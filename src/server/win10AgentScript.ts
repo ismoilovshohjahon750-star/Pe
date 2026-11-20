@@ -138,11 +138,11 @@ function Invoke-AgentTool($msg) {
             return "Navigated to $($a.url)"
         }
         "run_bash" {
-            $out = Invoke-Expression ([string]$a.command) | Out-String
+            $out = (& cmd.exe /c ([string]$a.command) 2>&1) | Out-String
             return $out
         }
         "run_powershell" {
-            $out = Invoke-Expression ([string]$a.command) | Out-String
+            $out = (& powershell.exe -NoProfile -NonInteractive -Command ([string]$a.command) 2>&1) | Out-String
             return $out
         }
         "file_list" {
