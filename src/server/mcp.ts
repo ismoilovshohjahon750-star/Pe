@@ -290,7 +290,7 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
 
       switch (name) {
         case 'desktop_screenshot': {
-          const frame = await realLinuxDesktop.captureScreenshotFrame();
+          const frame = await realLinuxDesktop.captureScreenshotFrame(true);
           const meta = await realLinuxDesktop.getSnapshotMeta();
           linuxSummary = `Captured Linux X11 frame (${frame.width}x${frame.height})`;
           linuxResult = {
@@ -319,9 +319,13 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
               ? args.button
               : 'left';
           linuxSummary = await realLinuxDesktop.click(x, y, button);
-          const meta = await realLinuxDesktop.getSnapshotMeta();
+          const [frame, meta] = await Promise.all([
+            realLinuxDesktop.captureScreenshotFrame(true),
+            realLinuxDesktop.getSnapshotMeta(),
+          ]);
           linuxResult = {
             content: [
+              { type: 'image', data: frame.data, mimeType: frame.mimeType },
               {
                 type: 'text',
                 text: JSON.stringify({ clicked: { x, y, button }, ...meta }, null, 2),

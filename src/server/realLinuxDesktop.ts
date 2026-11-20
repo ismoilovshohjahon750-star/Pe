@@ -433,15 +433,17 @@ class RealLinuxDesktopManager {
     await this.ensureStarted();
     const cx = Math.max(0, Math.min(SCREEN_W - 1, Math.round(x)));
     const cy = Math.max(0, Math.min(SCREEN_H - 1, Math.round(y)));
-    const args =
+    await execFileAsync('xdotool', ['mousemove', String(cx), String(cy)], { env: this.env() });
+    await new Promise((r) => setTimeout(r, 40));
+    const clickArgs =
       button === 'right'
-        ? ['mousemove', '--sync', String(cx), String(cy), 'click', '3']
+        ? ['click', '3']
         : button === 'middle'
-          ? ['mousemove', '--sync', String(cx), String(cy), 'click', '2']
+          ? ['click', '2']
           : button === 'double'
-            ? ['mousemove', '--sync', String(cx), String(cy), 'click', '--repeat', '2', '--delay', '80', '1']
-            : ['mousemove', '--sync', String(cx), String(cy), 'click', '1'];
-    await execFileAsync('xdotool', args, { env: this.env() });
+            ? ['click', '--repeat', '2', '--delay', '80', '1']
+            : ['click', '1'];
+    await execFileAsync('xdotool', clickArgs, { env: this.env() });
     return `${button} click on X11 at (${cx}, ${cy})`;
   }
 
@@ -856,29 +858,46 @@ class RealLinuxDesktopManager {
     };
   }
 
-  async captureScreenshotFrame(): Promise<RealAgentFrame> {
+  async captureScreenshotFrame(fresh = false): Promise<RealAgentFrame> {
     await this.ensureStarted();
-    if (this.latestFrame?.data) {
+    if (!fresh && this.latestFrame?.data && Date.now() - this.latestFrame.timestamp < 500) {
       return this.latestFrame;
     }
-    for (let i = 0; i < 8; i++) {
-      await new Promise((r) => setTimeout(r, 120));
+    if (fresh) {
+      await new Promise((r) => setTimeout(r, 140));
+    }
+    try {
+      const tmpSnap = '/tmp/claude_x11_snap.jpg';
+      await execFileAsync('scrot', ['-o', '-q', '75', tmpSnap], { env: this.env() });
+      const jpgBase64 = fs.readFileSync(tmpSnap).toString('base64');
+      const frame: RealAgentFrame = {
+        mimeType: 'image/jpeg',
+        width: SCREEN_W,
+        height: SCREEN_H,
+        data: jpgBase64,
+        cursorX: 0,
+        cursorY: 0,
+        timestamp: Date.now(),
+      };
+      this.latestFrame = frame;
+      return frame;
+    } catch {
       if (this.latestFrame?.data) {
         return this.latestFrame;
       }
+      const tmpSnap = '/tmp/claude_x11_snap.png';
+      await execFileAsync('scrot', ['-o', tmpSnap], { env: this.env() });
+      const pngBase64 = fs.readFileSync(tmpSnap).toString('base64');
+      return {
+        mimeType: 'image/png',
+        width: SCREEN_W,
+        height: SCREEN_H,
+        data: pngBase64,
+        cursorX: 0,
+        cursorY: 0,
+        timestamp: Date.now(),
+      };
     }
-    const tmpSnap = '/tmp/claude_x11_snap.png';
-    await execFileAsync('scrot', ['-o', tmpSnap], { env: this.env() });
-    const pngBase64 = fs.readFileSync(tmpSnap).toString('base64');
-    return {
-      mimeType: 'image/png',
-      width: SCREEN_W,
-      height: SCREEN_H,
-      data: pngBase64,
-      cursorX: 0,
-      cursorY: 0,
-      timestamp: Date.now(),
-    };
   }
 
   async restart(): Promise<LinuxDesktopStatus> {

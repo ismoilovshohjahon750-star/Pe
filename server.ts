@@ -20,13 +20,19 @@ import { realWin10Bridge } from './src/server/realWin10Bridge.ts';
 import { renderDesktopPngBase64 } from './src/server/screenshot.ts';
 import { buildPythonPcAgent } from './src/server/pcAgentPython.ts';
 import { buildWindows10AgentPs1 } from './src/server/win10AgentScript.ts';
+import {
+  formatGeminiError,
+  runJarvisChat,
+  transcribeJarvisAudio,
+  type JarvisChatMessage,
+} from './src/server/jarvis.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer() {
   ensureDriveSeeded();
   const app = express();
-  app.use(express.json({ limit: '4mb' }));
+  app.use(express.json({ limit: '16mb' }));
 
   // CORS headers for remote MCP clients (Claude Desktop / mcp-remote / Claude.ai)
   app.use((req, res, next) => {
@@ -139,6 +145,76 @@ async function startServer() {
       authEnabled: updated.authEnabled,
       token: updated.authEnabled ? desktopStore.getAuthToken() : null,
     });
+  });
+
+  app.post('/api/jarvis/chat', async (req, res) => {
+    const wantsStream =
+      req.body?.stream === true ||
+      String(req.headers.accept || '').includes('text/event-stream');
+
+    const message = String(req.body?.message || '').trim();
+    const history = Array.isArray(req.body?.history)
+      ? (req.body.history as JarvisChatMessage[])
+      : [];
+
+    if (!message) {
+      res.status(400).json({ error: 'Xabar bo‘sh bo‘lmasligi kerak.' });
+      return;
+    }
+
+    if (wantsStream) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+      });
+      res.flushHeaders?.();
+      res.write(': connected\n\n');
+      const sendSse = (event: string, data: unknown) => {
+        if (!res.writableEnded) {
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        }
+      };
+
+      try {
+        const result = await runJarvisChat(message, history, (ev) => {
+          sendSse(ev.type, ev);
+        });
+        sendSse('done', result);
+      } catch (err) {
+        const formatted = formatGeminiError(err);
+        sendSse('error', { status: formatted.status, error: formatted.message });
+      } finally {
+        if (!res.writableEnded) {
+          res.end();
+        }
+      }
+      return;
+    }
+
+    try {
+      const result = await runJarvisChat(message, history);
+      res.json(result);
+    } catch (err) {
+      const formatted = formatGeminiError(err);
+      res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  app.post('/api/jarvis/transcribe', async (req, res) => {
+    try {
+      const audioBase64 = String(req.body?.audioBase64 || '');
+      const mimeType = String(req.body?.mimeType || 'audio/webm');
+      if (!audioBase64) {
+        res.status(400).json({ error: 'Audio ma‘lumot topilmadi.' });
+        return;
+      }
+      const text = await transcribeJarvisAudio(audioBase64, mimeType);
+      res.json({ text });
+    } catch (err) {
+      const formatted = formatGeminiError(err);
+      res.status(formatted.status).json({ error: formatted.message });
+    }
   });
 
   app.get('/api/screenshot.png', (_req, res) => {

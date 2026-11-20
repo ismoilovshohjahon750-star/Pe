@@ -8,6 +8,7 @@ import {
 interface RealWin10ViewProps {
   status: RealAgentStatus;
   frame: RealAgentFrame | null;
+  allowRotate?: boolean;
   onClickAt: (x: number, y: number, button: 'left' | 'right' | 'double') => void;
   onScrollAt: (x: number, y: number, deltaY: number) => void;
   onTypeText: (text: string, enter: boolean) => void;
@@ -24,6 +25,7 @@ const SPECIAL_KEY_MAP: Record<string, string> = {
 export function RealWin10View({
   status,
   frame,
+  allowRotate = true,
   onClickAt,
   onScrollAt,
   onTypeText,
@@ -51,7 +53,7 @@ export function RealWin10View({
   const screenW = frame?.width || status.screenWidth || 1920;
   const screenH = frame?.height || status.screenHeight || 1080;
 
-  const isPortrait = boxSize.height > boxSize.width && boxSize.width > 0;
+  const isPortrait = allowRotate && boxSize.height > boxSize.width && boxSize.width > 0;
   const availW = isPortrait ? boxSize.height : boxSize.width;
   const availH = isPortrait ? boxSize.width : boxSize.height;
   const scale = Math.max(0.1, Math.min(availW / screenW, availH / screenH));

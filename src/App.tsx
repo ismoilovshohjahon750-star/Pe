@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Monitor } from 'lucide-react';
+import { Cpu, Monitor, Plug } from 'lucide-react';
+import { LIQUID_PILL_BTN } from './components/liquidGlass.ts';
+import { JarvisModal } from './components/JarvisModal.tsx';
 import { McpConnectModal } from './components/McpConnectModal.tsx';
 import { PcConnectModal } from './components/PcConnectModal.tsx';
 import { RealLinuxView } from './components/RealLinuxView.tsx';
@@ -25,6 +27,7 @@ export default function App() {
   const [executionTarget, setExecutionTarget] = useState<ExecutionTarget>('linux');
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [pcModalOpen, setPcModalOpen] = useState(false);
+  const [jarvisOpen, setJarvisOpen] = useState(false);
   const [browserSharing, setBrowserSharing] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -220,33 +223,35 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[#03060C] text-slate-100 overflow-hidden">
-      <header className="h-11 px-4 bg-[#060A12] border-b border-slate-800/80 flex items-center justify-end gap-2 shrink-0">
+      <header className="h-12 px-2.5 sm:px-4 bg-[#070B14]/90 backdrop-blur-md border-b border-white/10 flex items-center justify-end gap-1.5 sm:gap-2.5 shrink-0">
         <button
           type="button"
-          onClick={() => setPcModalOpen(true)}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 transition-colors whitespace-nowrap shrink-0"
+          onClick={() => setJarvisOpen((prev) => !prev)}
+          className={LIQUID_PILL_BTN}
         >
-          {realAgentStatus.connected ? (
-            <span className="w-2 h-2 rounded-full bg-emerald-500" aria-hidden="true" />
-          ) : (
-            <Monitor className="w-3.5 h-3.5 text-sky-400" />
-          )}
-          <span>Haqiqiy PC Ulash</span>
+          <Cpu className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+          <span className="relative z-10">J.A.R.V.I.S.</span>
         </button>
-        <button
-          type="button"
-          onClick={() => setMcpModalOpen(true)}
-          className="px-4 py-1.5 text-xs font-semibold bg-[#0078D4] text-white hover:bg-[#0063B1] transition-colors whitespace-nowrap shrink-0"
-        >
-          MCP Ulash
+        <button type="button" onClick={() => setPcModalOpen(true)} className={LIQUID_PILL_BTN}>
+          {realAgentStatus.connected ? (
+            <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10" aria-hidden="true" />
+          ) : (
+            <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+          )}
+          <span className="relative z-10">Haqiqiy PC Ulash</span>
+        </button>
+        <button type="button" onClick={() => setMcpModalOpen(true)} className={LIQUID_PILL_BTN}>
+          <Plug className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+          <span className="relative z-10">MCP Ulash</span>
         </button>
       </header>
 
-      <main className="flex-1 min-h-0 flex overflow-hidden">
+      <main className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {showingRealPc ? (
           <RealWin10View
             status={realAgentStatus}
             frame={realAgentFrame}
+            allowRotate={!jarvisOpen}
             onClickAt={(x, y, button) => sendWs({ type: 'user:real_click', x, y, button })}
             onScrollAt={(x, y, deltaY) => sendWs({ type: 'user:real_scroll', x, y, deltaY })}
             onTypeText={(text, enter) => sendWs({ type: 'user:real_type', text, enter })}
@@ -256,12 +261,18 @@ export default function App() {
           <RealLinuxView
             status={linuxStatus}
             frame={linuxFrame}
+            allowRotate={!jarvisOpen}
             onClickAt={(x, y, button) => sendWs({ type: 'user:linux_click', x, y, button })}
             onScrollAt={(x, y, deltaY) => sendWs({ type: 'user:linux_scroll', x, y, deltaY })}
             onTypeText={(text, enter) => sendWs({ type: 'user:linux_type', text, enter })}
             onPressKey={(key) => sendWs({ type: 'user:linux_key', key })}
           />
         )}
+
+        <JarvisModal
+          open={jarvisOpen}
+          onClose={() => setJarvisOpen(false)}
+        />
       </main>
 
       <PcConnectModal

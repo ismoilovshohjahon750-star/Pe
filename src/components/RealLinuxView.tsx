@@ -8,6 +8,7 @@ import {
 interface RealLinuxViewProps {
   status: LinuxDesktopStatus;
   frame: RealAgentFrame | null;
+  allowRotate?: boolean;
   onClickAt: (x: number, y: number, button: 'left' | 'right' | 'double') => void;
   onScrollAt: (x: number, y: number, deltaY: number) => void;
   onTypeText: (text: string, enter: boolean) => void;
@@ -34,6 +35,7 @@ const SPECIAL_KEY_MAP: Record<string, string> = {
 export function RealLinuxView({
   status,
   frame,
+  allowRotate = true,
   onClickAt,
   onScrollAt,
   onTypeText,
@@ -61,8 +63,8 @@ export function RealLinuxView({
   const screenW = frame?.width || status.screenWidth || 1280;
   const screenH = frame?.height || status.screenHeight || 720;
 
-  // Keep Linux screen horizontal (landscape) even on portrait screens
-  const isPortrait = boxSize.height > boxSize.width && boxSize.width > 0;
+  // Keep Linux screen horizontal (landscape) unless stacked vertically with J.A.R.V.I.S.
+  const isPortrait = allowRotate && boxSize.height > boxSize.width && boxSize.width > 0;
   const availW = isPortrait ? boxSize.height : boxSize.width;
   const availH = isPortrait ? boxSize.width : boxSize.height;
   const scale = Math.max(0.1, Math.min(availW / screenW, availH / screenH));
