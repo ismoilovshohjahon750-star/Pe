@@ -5,11 +5,13 @@ export function buildWindows10AgentPs1(wsUrl: string, token?: string | null): st
 # Zero external dependencies required (uses built-in .NET + Win32 user32.dll).
 
 $ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $WsUri = "${finalWsUrl}"
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+if (-not ([System.Management.Automation.PSTypeName]'Win32Input').Type) {
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -28,6 +30,7 @@ public class Win32Input {
     public const uint MOUSEEVENTF_WHEEL = 0x0800;
 }
 "@
+}
 
 function Get-ScreenFrameJson {
     $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -39,7 +42,7 @@ function Get-ScreenFrameJson {
     $ms = New-Object System.IO.MemoryStream
     $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
     $encParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
-    $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, 55L)
+    $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [int64]55)
     $bmp.Save($ms, $jpegCodec, $encParams)
     $bmp.Dispose()
 
@@ -55,7 +58,7 @@ function Get-ScreenFrameJson {
         data = $b64
         cursorX = $pos.X
         cursorY = $pos.Y
-        timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        timestamp = [long]([DateTime]::UtcNow - [datetime]'1970-01-01').TotalMilliseconds
     } | ConvertTo-Json -Compress
 }
 
@@ -119,7 +122,11 @@ function Invoke-AgentTool($msg) {
                 return "Started $($a.command)"
             }
             switch ($app) {
-                { $_ -in @("edge", "chromium", "chrome", "browser") } { Start-Process ([string]($a.url ?? "https://modelcontextprotocol.io")); return "Opened browser" }
+                { $_ -in @("edge", "chromium", "chrome", "browser") } {
+                    $targetUrl = if ($a.url) { [string]$a.url } else { "https://modelcontextprotocol.io" }
+                    Start-Process $targetUrl
+                    return "Opened browser"
+                }
                 { $_ -in @("notepad", "mousepad", "editor") } { Start-Process notepad ([string]$a.filePath); return "Opened Notepad" }
                 { $_ -in @("explorer", "files") } { Start-Process explorer ([string]$a.filePath); return "Opened Explorer" }
                 { $_ -in @("calculator", "calc") } { Start-Process calc; return "Opened Calculator" }
@@ -163,6 +170,7 @@ function Invoke-AgentTool($msg) {
 
 Write-Host "Connecting real Windows 10 Pro desktop to $WsUri ..."
 $ws = New-Object System.Net.WebSockets.ClientWebSocket
+$ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(15)
 $cts = New-Object System.Threading.CancellationTokenSource
 $ws.ConnectAsync([Uri]$WsUri, $cts.Token).GetAwaiter().GetResult()
 
@@ -201,7 +209,15 @@ while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
         $res = $recvTask.GetAwaiter().GetResult()
         $recvTask = $null
         if ($res.Count -gt 0) {
-            $rawMsg = [System.Text.Encoding]::UTF8.GetString($recvBuf, 0, $res.Count)
+            $msgStream = New-Object System.IO.MemoryStream
+            $msgStream.Write($recvBuf, 0, $res.Count)
+            while (-not $res.EndOfMessage) {
+                $segMore = New-Object System.ArraySegment[byte]($recvBuf, 0, $recvBuf.Length)
+                $res = $ws.ReceiveAsync($segMore, $cts.Token).GetAwaiter().GetResult()
+                if ($res.Count -gt 0) { $msgStream.Write($recvBuf, 0, $res.Count) }
+            }
+            $rawMsg = [System.Text.Encoding]::UTF8.GetString($msgStream.ToArray())
+            $msgStream.Dispose()
             $cmdMsg = $rawMsg | ConvertFrom-Json
             if ($cmdMsg.type -eq "cmd:exec") {
                 try {

@@ -102,7 +102,11 @@ async function startServer() {
   });
 
   app.get('/api/real-win10-agent.ps1', (req, res) => {
-    const proto = req.headers['x-forwarded-proto'] === 'https' || req.protocol === 'https' ? 'wss' : 'ws';
+    const fwdProto = String(req.headers['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    const proto = fwdProto === 'https' || req.protocol === 'https' ? 'wss' : 'ws';
     const host = req.headers.host || `localhost:${PORT}`;
     const state = desktopStore.getState();
     const token = state.authEnabled ? desktopStore.getAuthToken() : null;

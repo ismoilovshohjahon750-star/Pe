@@ -22,7 +22,7 @@ export function PcConnectModal({
   if (!open) return null;
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-  const psCommand = `irm "${origin}/api/real-win10-agent.ps1" | iex`;
+  const psCommand = `irm "${origin}/api/real-win10-agent.ps1" | iex;`;
 
   const copyCommand = () => {
     void navigator.clipboard?.writeText(psCommand);
@@ -127,17 +127,22 @@ export function PcConnectModal({
                 onClick={copyCommand}
                 className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1.5 shrink-0"
               >
-                {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copied ? 'Nusxalandi' : 'Buyruqni nusxalash'}</span>
+                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copied ? 'Nusxalandi! 1 marta Ctrl+V qiling' : 'Buyruqni nusxalash'}</span>
               </button>
             </div>
 
-            <pre className="p-3 bg-slate-950 border border-slate-800 text-sky-300 font-mono-tabular overflow-x-auto">
-              {psCommand}
-            </pre>
+            <input
+              type="text"
+              readOnly
+              value={psCommand}
+              onClick={(e) => e.currentTarget.select()}
+              aria-label="PowerShell ulash buyrug'i"
+              className="w-full p-3 bg-slate-950 border border-slate-800 text-sky-300 font-mono-tabular text-xs focus:outline-none focus:border-sky-500"
+            />
 
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
-              <span>Qo‘shimcha dastur o‘rnatish shart emas — Windows PowerShell + .NET orqali ishlaydi.</span>
+              <span>PowerShell’ga faqat 1 marta joylang (Ctrl+V) va Enter bosing.</span>
               <a
                 href="/api/real-win10-agent.ps1"
                 download="win10-claude-agent.ps1"
