@@ -39,7 +39,7 @@ export function PcConnectModal({
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
   const pipCommand = 'pip install mss pillow pyautogui websockets';
-  const pyRunCommand = `python -c "import urllib.request,runpy; urllib.request.urlretrieve('${origin}/api/real-pc-agent.py','real-pc-agent.py'); runpy.run_path('real-pc-agent.py',run_name='__main__')"`;
+  const pyRunCommand = `cd $HOME; python -c "import urllib.request,runpy; urllib.request.urlretrieve('${origin}/api/real-pc-agent.py','real-pc-agent.py'); runpy.run_path('real-pc-agent.py',run_name='__main__')"`;
 
   const copyText = (key: string, text: string) => {
     void navigator.clipboard?.writeText(text);
