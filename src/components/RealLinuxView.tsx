@@ -13,6 +13,7 @@ interface RealLinuxViewProps {
   onScrollAt: (x: number, y: number, deltaY: number) => void;
   onTypeText: (text: string, enter: boolean) => void;
   onPressKey: (key: string) => void;
+  onRetry?: () => void;
 }
 
 const SPECIAL_KEY_MAP: Record<string, string> = {
@@ -40,6 +41,7 @@ export function RealLinuxView({
   onScrollAt,
   onTypeText,
   onPressKey,
+  onRetry,
 }: RealLinuxViewProps) {
   const lastWheelAt = useRef(0);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -149,11 +151,24 @@ export function RealLinuxView({
           className="shrink-0 select-none cursor-default"
         />
       ) : (
-        <div className="text-center space-y-2 p-6">
+        <div className="text-center space-y-2.5 p-6 max-w-md">
           <div className="text-sm font-medium text-slate-200">
             {status.error ? 'Linux X11 xatoligi' : 'Linux ekrani ishga tushmoqda...'}
           </div>
-          {status.error && <p className="text-xs text-slate-400">{status.error}</p>}
+          {status.error && (
+            <>
+              <p className="text-xs text-slate-400 break-words">{status.error}</p>
+              {onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="px-3.5 py-1.5 rounded-full text-xs font-medium bg-white/10 hover:bg-white/15 border border-white/15 text-slate-100 transition-colors cursor-pointer"
+                >
+                  Qayta urinish
+                </button>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

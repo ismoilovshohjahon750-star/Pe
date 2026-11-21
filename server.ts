@@ -3,7 +3,7 @@ import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { ExecutionTarget } from './src/desktop/bridge.ts';
+import { shouldSendToWsClient, type ExecutionTarget } from './src/desktop/bridge.ts';
 import type { AppId } from './src/desktop/types.ts';
 import { desktopStore } from './src/server/desktopStore.ts';
 import { ensureDriveSeeded, makeWinDir } from './src/server/filesystem.ts';
@@ -23,6 +23,7 @@ import { buildWindows10AgentPs1 } from './src/server/win10AgentScript.ts';
 import {
   formatGeminiError,
   runJarvisChat,
+  synthesizeJarvisSpeech,
   transcribeJarvisAudio,
   type JarvisChatMessage,
 } from './src/server/jarvis.ts';
@@ -97,6 +98,15 @@ async function startServer() {
   });
 
   app.get('/api/linux/status', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      status: realLinuxDesktop.getStatus(),
+      frame: realLinuxDesktop.getLatestFrame(),
+    });
+  });
+
+  app.get('/api/linux/frame', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
       status: realLinuxDesktop.getStatus(),
       frame: realLinuxDesktop.getLatestFrame(),
@@ -211,6 +221,21 @@ async function startServer() {
       }
       const text = await transcribeJarvisAudio(audioBase64, mimeType);
       res.json({ text });
+    } catch (err) {
+      const formatted = formatGeminiError(err);
+      res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  app.post('/api/jarvis/tts', async (req, res) => {
+    try {
+      const text = String(req.body?.text || '').trim();
+      if (!text) {
+        res.status(400).json({ error: 'Ovozga aylantirish uchun matn bo‘sh bo‘lmasligi kerak.' });
+        return;
+      }
+      const result = await synthesizeJarvisSpeech(text);
+      res.json(result);
     } catch (err) {
       const formatted = formatGeminiError(err);
       res.status(formatted.status).json({ error: formatted.message });
@@ -457,12 +482,36 @@ async function startServer() {
     }
   };
 
+  const broadcastFrame = (payloadObj: Record<string, unknown>) => {
+    const payload = JSON.stringify(payloadObj);
+    for (const client of wss.clients) {
+      if (shouldSendToWsClient(client.readyState, client.bufferedAmount)) {
+        client.send(payload);
+      }
+    }
+  };
+
+  const wsAlive = new WeakMap<WebSocket, boolean>();
+  const wsHeartbeat = setInterval(() => {
+    for (const client of wss.clients) {
+      if (wsAlive.get(client) === false) {
+        client.terminate();
+        continue;
+      }
+      wsAlive.set(client, false);
+      if (client.readyState === WebSocket.OPEN) {
+        client.ping();
+      }
+    }
+  }, 15000);
+  wsHeartbeat.unref();
+
   realWin10Bridge.onStatus((status) => {
     broadcastAll({ type: 'real_agent_status', status });
   });
 
   realWin10Bridge.onFrame((frame) => {
-    broadcastAll({ type: 'real_agent_frame', frame });
+    broadcastFrame({ type: 'real_agent_frame', frame });
   });
 
   realWin10Bridge.onTarget((target) => {
@@ -474,7 +523,7 @@ async function startServer() {
   });
 
   realLinuxDesktop.onFrame((frame) => {
-    broadcastAll({ type: 'linux_frame', frame });
+    broadcastFrame({ type: 'linux_frame', frame });
   });
 
   const broadcastState = () => {
@@ -492,6 +541,8 @@ async function startServer() {
   });
 
   wss.on('connection', (ws) => {
+    wsAlive.set(ws, true);
+    ws.on('pong', () => wsAlive.set(ws, true));
     desktopStore.setViewerCount(wss.clients.size);
     ws.send(JSON.stringify({ type: 'state', state: desktopStore.getState() }));
     ws.send(

@@ -1,9 +1,11 @@
-import { exec, execFile, spawn, type ChildProcess } from 'node:child_process';
+import { exec, execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
+  buildNonInteractiveAptInstallCmd,
   createInitialLinuxStatus,
+  shouldBroadcastFrame,
   type LinuxDesktopStatus,
   type RealAgentFrame,
 } from '../desktop/bridge.ts';
@@ -15,6 +17,8 @@ const execFileAsync = promisify(execFile);
 const DISPLAY = ':99';
 const SCREEN_W = 1280;
 const SCREEN_H = 720;
+const JPEG_SOI = Buffer.from([0xff, 0xd8]);
+const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 
 type StatusListener = (status: LinuxDesktopStatus) => void;
 type FrameListener = (frame: RealAgentFrame) => void;
@@ -31,7 +35,12 @@ class RealLinuxDesktopManager {
   private pcmanfmProc: ChildProcess | null = null;
   private ffmpegProc: ChildProcess | null = null;
   private frameTimes: number[] = [];
+  private lastBroadcastJpeg: Buffer | null = null;
+  private lastBroadcastAt = 0;
   private startingPromise: Promise<LinuxDesktopStatus> | null = null;
+  private installCorePromise: Promise<boolean> | null = null;
+  private installChromiumPromise: Promise<boolean> | null = null;
+  private aptQueue: Promise<unknown> = Promise.resolve();
 
   getStatus(): LinuxDesktopStatus {
     return this.status;
@@ -55,6 +64,54 @@ class RealLinuxDesktopManager {
     for (const fn of this.statusListeners) fn(this.status);
   }
 
+  private emitFrame(jpeg: Buffer, force = false): RealAgentFrame {
+    const now = Date.now();
+    const frame: RealAgentFrame = {
+      mimeType: 'image/jpeg',
+      width: SCREEN_W,
+      height: SCREEN_H,
+      data: jpeg.toString('base64'),
+      cursorX: 0,
+      cursorY: 0,
+      timestamp: now,
+    };
+    this.latestFrame = frame;
+
+    if (force || shouldBroadcastFrame(this.lastBroadcastJpeg, jpeg, now - this.lastBroadcastAt, 4000)) {
+      this.lastBroadcastJpeg = Buffer.from(jpeg);
+      this.lastBroadcastAt = now;
+      for (const fn of this.frameListeners) fn(frame);
+    }
+    return frame;
+  }
+
+  private async pushLiveFrame(delayMs = 80): Promise<void> {
+    try {
+      if (delayMs > 0) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+      const tmpSnap = '/tmp/claude_x11_snap.jpg';
+      await execFileAsync('scrot', ['-o', '-q', '80', tmpSnap], { env: this.env() });
+      const buf = fs.readFileSync(tmpSnap);
+      this.emitFrame(buf, true);
+    } catch {
+      // ignore transient scrot errors
+    }
+  }
+
+  private async waitForWindowChange(prevIds: Set<string>, timeoutMs = 1200): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    await new Promise((r) => setTimeout(r, 250));
+    while (Date.now() < deadline) {
+      const current = await this.listWindows();
+      if (current.some((w) => !prevIds.has(w.windowId))) {
+        await new Promise((r) => setTimeout(r, 120));
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 140));
+    }
+  }
+
   private env() {
     return {
       ...process.env,
@@ -64,32 +121,188 @@ class RealLinuxDesktopManager {
     };
   }
 
-  async checkInstalled(): Promise<boolean> {
+  private spawnSafe(cmd: string, args: string[], opts: SpawnOptions): ChildProcess {
+    const child = spawn(cmd, args, opts);
+    child.on('error', (err) => {
+      console.error(`[Linux X11] Spawn error (${cmd}):`, (err as Error).message);
+    });
+    return child;
+  }
+
+  private async hasBinary(name: string): Promise<boolean> {
     try {
-      await execAsync('which Xvfb openbox xdotool ffmpeg');
-      this.status = { ...this.status, available: true, error: null };
+      await execFileAsync('which', [name], { env: process.env });
       return true;
     } catch {
+      return false;
+    }
+  }
+
+  private runShellNoStdin(
+    command: string,
+    timeoutMs = 240000,
+    customEnv?: NodeJS.ProcessEnv,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn('bash', ['-lc', command], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: customEnv ?? {
+          ...process.env,
+          DEBIAN_FRONTEND: 'noninteractive',
+          DEBCONF_NONINTERACTIVE_SEEN: 'true',
+          NEEDRESTART_MODE: 'a',
+          UCF_FORCE_CONFFOLD: '1',
+        },
+      });
+
+      const maxTail = 16384;
+      let stdout = '';
+      let stderr = '';
+      let timedOut = false;
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGTERM');
+        setTimeout(() => child.kill('SIGKILL'), 2000).unref();
+      }, timeoutMs);
+
+      child.stdout?.on('data', (chunk: Buffer) => {
+        stdout = (stdout + chunk.toString('utf8')).slice(-maxTail);
+      });
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderr = (stderr + chunk.toString('utf8')).slice(-maxTail);
+      });
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (timedOut) {
+          reject(new Error(`Command timed out after ${timeoutMs}ms: ${stderr.slice(-400)}`));
+          return;
+        }
+        const exitCode = typeof code === 'number' ? code : 1;
+        if (exitCode !== 0) {
+          reject(new Error(stderr.trim() || stdout.trim() || `Exit code ${exitCode}`));
+          return;
+        }
+        resolve({ stdout, stderr, exitCode: 0 });
+      });
+    });
+  }
+
+  private enqueueApt<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.aptQueue.then(task, task);
+    this.aptQueue = run.catch(() => {});
+    return run;
+  }
+
+  private async hasCoreDesktopBinaries(): Promise<boolean> {
+    const required = ['Xvfb', 'openbox', 'xdotool', 'scrot', 'xdpyinfo', 'xsetroot', 'ffmpeg'];
+    const checks = await Promise.all(required.map((bin) => this.hasBinary(bin)));
+    return checks.every(Boolean);
+  }
+
+  async checkInstalled(): Promise<boolean> {
+    if (await this.hasCoreDesktopBinaries()) {
+      this.status = { ...this.status, available: true, error: null };
+      return true;
+    }
+
+    if (this.installCorePromise) {
+      return this.installCorePromise;
+    }
+
+    this.installCorePromise = this.enqueueApt(async () => {
       try {
-        console.log('Xvfb/openbox/xdotool/ffmpeg not found. Attempting automatic apt-get installation...');
-        await execAsync(
-          'export DEBIAN_FRONTEND=noninteractive && (dpkg --configure -a || true) && apt-get update && apt-get install -y --fix-broken xvfb openbox tint2 pcmanfm xfce4-terminal mousepad galculator chromium xdotool scrot ffmpeg dbus-x11 adwaita-icon-theme x11-utils fonts-dejavu-core',
-          { maxBuffer: 8 * 1024 * 1024, timeout: 300000 },
-        );
-        await execAsync('which Xvfb openbox xdotool ffmpeg');
+        if (await this.hasCoreDesktopBinaries()) {
+          this.status = { ...this.status, available: true, error: null };
+          return true;
+        }
+
+        const hasFfmpeg = await this.hasBinary('ffmpeg');
+        const corePackages = [
+          'xvfb',
+          'openbox',
+          'tint2',
+          'pcmanfm',
+          'xfce4-terminal',
+          'mousepad',
+          'galculator',
+          'xdotool',
+          'scrot',
+          'dbus-x11',
+          'x11-utils',
+          'x11-xserver-utils',
+          'fonts-dejavu-core',
+          ...(hasFfmpeg ? [] : ['ffmpeg']),
+        ];
+
+        console.log('X11 core binaries not found. Installing fast Debian desktop packages...');
+        await this.runShellNoStdin(buildNonInteractiveAptInstallCmd(corePackages), 240000);
+
+        if (!(await this.hasCoreDesktopBinaries())) {
+          throw new Error('Required X11 binaries (Xvfb, openbox, xdotool, scrot, ffmpeg) still missing after install.');
+        }
+
         this.status = { ...this.status, available: true, error: null };
-        console.log('Successfully auto-installed X11 desktop packages!');
+        this.emitStatus();
+        console.log('Successfully installed X11 core desktop packages!');
         return true;
       } catch (installErr) {
         this.status = {
           ...this.status,
           available: false,
           running: false,
-          error: `Xvfb / openbox / xdotool / ffmpeg not installed and auto-install failed: ${(installErr as Error).message}`,
+          error: `X11 paketlarini o‘rnatib bo‘lmadi: ${(installErr as Error).message.slice(0, 320)}`,
         };
+        this.emitStatus();
         return false;
+      } finally {
+        this.installCorePromise = null;
+      }
+    });
+
+    return this.installCorePromise;
+  }
+
+  private async findChromiumBinary(): Promise<string | null> {
+    for (const candidate of ['chromium', 'chromium-browser', 'google-chrome']) {
+      if (await this.hasBinary(candidate)) {
+        return candidate;
       }
     }
+    return null;
+  }
+
+  private async ensureChromiumInstalled(): Promise<boolean> {
+    if (await this.findChromiumBinary()) return true;
+    if (this.installChromiumPromise) return this.installChromiumPromise;
+
+    this.installChromiumPromise = this.enqueueApt(async () => {
+      try {
+        if (await this.findChromiumBinary()) return true;
+        console.log('Installing Chromium + Adwaita icons in background...');
+        await this.runShellNoStdin(
+          buildNonInteractiveAptInstallCmd(['chromium', 'adwaita-icon-theme']),
+          300000,
+        );
+        const found = await this.findChromiumBinary();
+        if (found) {
+          console.log(`Background Chromium install finished (${found}).`);
+          return true;
+        }
+        return false;
+      } catch (err) {
+        console.warn('Background Chromium install skipped/failed:', (err as Error).message.slice(0, 200));
+        return false;
+      } finally {
+        this.installChromiumPromise = null;
+      }
+    });
+
+    return this.installChromiumPromise;
   }
 
   private prepareDesktopConfigs(): void {
@@ -253,13 +466,13 @@ class RealLinuxDesktopManager {
     if (this.startingPromise) return this.startingPromise;
 
     this.startingPromise = (async () => {
-      const ok = await this.checkInstalled();
-      if (!ok) {
-        this.emitStatus();
-        return this.status;
-      }
-
       try {
+        const ok = await this.checkInstalled();
+        if (!ok) {
+          this.emitStatus();
+          return this.status;
+        }
+
         this.prepareDesktopConfigs();
         // Clean stale X99 lock if previous server crashed
         try {
@@ -270,42 +483,62 @@ class RealLinuxDesktopManager {
         }
 
         // Start Xvfb
-        this.xvfbProc = spawn(
+        let xvfbExitedEarly: number | null = null;
+        this.xvfbProc = this.spawnSafe(
           'Xvfb',
           [DISPLAY, '-screen', '0', `${SCREEN_W}x${SCREEN_H}x24`, '-ac', '+extension', 'GLX', '+render', '-noreset'],
           { stdio: 'ignore', detached: false },
         );
+        this.xvfbProc.once('exit', (code) => {
+          xvfbExitedEarly = code ?? 1;
+        });
 
         // Wait until Xvfb accepts connections
-        for (let i = 0; i < 20; i++) {
+        let xReady = false;
+        for (let i = 0; i < 30; i++) {
+          if (xvfbExitedEarly !== null) {
+            throw new Error(`Xvfb exited prematurely with code ${xvfbExitedEarly}`);
+          }
           try {
-            await execAsync(`DISPLAY=${DISPLAY} xdpyinfo >/dev/null 2>&1`);
+            await execFileAsync('xdpyinfo', [], { env: this.env() });
+            xReady = true;
             break;
           } catch {
             await new Promise((r) => setTimeout(r, 150));
           }
         }
+        if (!xReady) {
+          throw new Error('Xvfb timed out waiting to accept X11 connections');
+        }
 
         const env = this.env();
         // Solid slate desktop backdrop fallback before pcmanfm paints wallpaper
-        await execAsync(`DISPLAY=${DISPLAY} xsetroot -solid "#0B1D36" -cursor_name left_ptr`, { env }).catch(
+        await execFileAsync('xsetroot', ['-solid', '#0B1D36', '-cursor_name', 'left_ptr'], { env }).catch(
           () => {},
         );
 
-        this.openboxProc = spawn('openbox', [], { env, stdio: 'ignore' });
-        await new Promise((r) => setTimeout(r, 350));
+        this.openboxProc = this.spawnSafe('openbox', [], { env, stdio: 'ignore' });
+        await new Promise((r) => setTimeout(r, 300));
 
-        this.tint2Proc = spawn('tint2', [], { env, stdio: 'ignore' });
-        this.pcmanfmProc = spawn('pcmanfm', ['--desktop'], { env, stdio: 'ignore' });
+        if (await this.hasBinary('tint2')) {
+          this.tint2Proc = this.spawnSafe('tint2', [], { env, stdio: 'ignore' });
+        }
+        if (await this.hasBinary('pcmanfm')) {
+          this.pcmanfmProc = this.spawnSafe('pcmanfm', ['--desktop'], { env, stdio: 'ignore' });
+        }
 
         // Open welcome readme + terminal cleanly without cluttering desktop icons
-        spawn('mousepad', ['/root/Desktop/README_Claude.txt'], { env, stdio: 'ignore' });
-        await new Promise((r) => setTimeout(r, 300));
-        spawn(
-          'xfce4-terminal',
-          ['--geometry=74x22+580+60', '-e', 'bash -lc "uname -a; echo \'Claude Linux Desktop Ready!\'; exec bash"'],
-          { env, stdio: 'ignore' },
-        );
+        if (await this.hasBinary('mousepad')) {
+          this.spawnSafe('mousepad', ['/root/Desktop/README_Claude.txt'], { env, stdio: 'ignore' });
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        if (await this.hasBinary('xfce4-terminal')) {
+          this.spawnSafe(
+            'xfce4-terminal',
+            ['--geometry=74x22+580+60', '-e', 'bash -lc "uname -a; echo \'Claude Linux Desktop Ready!\'; exec bash"'],
+            { env, stdio: 'ignore' },
+          );
+        }
 
         this.startFfmpegGrabber();
 
@@ -316,6 +549,17 @@ class RealLinuxDesktopManager {
           error: null,
         };
         this.emitStatus();
+
+        // Push an immediate frame so UI transitions out of loading state right away
+        void this.captureScreenshotFrame(false)
+          .then((frame) => {
+            for (const fn of this.frameListeners) fn(frame);
+          })
+          .catch(() => {});
+
+        // Install Chromium + icons asynchronously in background so desktop shows immediately
+        void this.ensureChromiumInstalled();
+
         return this.status;
       } catch (err) {
         this.status = {
@@ -339,7 +583,7 @@ class RealLinuxDesktopManager {
       this.ffmpegProc = null;
     }
 
-    const ff = spawn(
+    const ff = this.spawnSafe(
       'ffmpeg',
       [
         '-loglevel',
@@ -355,7 +599,7 @@ class RealLinuxDesktopManager {
         '-i',
         DISPLAY,
         '-q:v',
-        '6',
+        '8',
         '-f',
         'image2pipe',
         '-vcodec',
@@ -368,16 +612,16 @@ class RealLinuxDesktopManager {
 
     let buffer = Buffer.alloc(0);
 
-    ff.stdout.on('data', (chunk: Buffer) => {
+    ff.stdout?.on('data', (chunk: Buffer) => {
       buffer = Buffer.concat([buffer, chunk]);
       // Extract complete JPEG frames bounded by FFD8 .. FFD9
       while (true) {
-        const start = buffer.indexOf(Buffer.from([0xff, 0xd8]));
+        const start = buffer.indexOf(JPEG_SOI);
         if (start === -1) {
           buffer = Buffer.alloc(0);
           break;
         }
-        const end = buffer.indexOf(Buffer.from([0xff, 0xd9]), start + 2);
+        const end = buffer.indexOf(JPEG_EOI, start + 2);
         if (end === -1) {
           if (start > 0) buffer = buffer.subarray(start);
           break;
@@ -389,21 +633,11 @@ class RealLinuxDesktopManager {
         this.frameTimes = [...this.frameTimes.filter((t) => now - t < 2000), now];
         const fps = Math.round((this.frameTimes.length / 2) * 10) / 10;
 
-        const frame: RealAgentFrame = {
-          mimeType: 'image/jpeg',
-          width: SCREEN_W,
-          height: SCREEN_H,
-          data: jpeg.toString('base64'),
-          cursorX: 0,
-          cursorY: 0,
-          timestamp: now,
-        };
-        this.latestFrame = frame;
+        this.emitFrame(jpeg, false);
         if (Math.abs(this.status.fps - fps) >= 0.5) {
           this.status = { ...this.status, fps };
           this.emitStatus();
         }
-        for (const fn of this.frameListeners) fn(frame);
       }
     });
 
@@ -422,6 +656,7 @@ class RealLinuxDesktopManager {
     const cx = Math.max(0, Math.min(SCREEN_W - 1, Math.round(x)));
     const cy = Math.max(0, Math.min(SCREEN_H - 1, Math.round(y)));
     await execFileAsync('xdotool', ['mousemove', '--sync', String(cx), String(cy)], { env: this.env() });
+    await this.pushLiveFrame(40);
     return `Moved X11 cursor to (${cx}, ${cy})`;
   }
 
@@ -444,6 +679,7 @@ class RealLinuxDesktopManager {
             ? ['click', '--repeat', '2', '--delay', '80', '1']
             : ['click', '1'];
     await execFileAsync('xdotool', clickArgs, { env: this.env() });
+    void this.pushLiveFrame(80);
     return `${button} click on X11 at (${cx}, ${cy})`;
   }
 
@@ -465,6 +701,7 @@ class RealLinuxDesktopManager {
       ['mousemove', '--sync', String(x1), String(y1), 'mousedown', btn, 'mousemove', '--sync', String(x2), String(y2), 'mouseup', btn],
       { env: this.env() },
     );
+    await this.pushLiveFrame(60);
     return `Dragged ${button} mouse from (${x1}, ${y1}) to (${x2}, ${y2})`;
   }
 
@@ -476,6 +713,7 @@ class RealLinuxDesktopManager {
     await execFileAsync('xdotool', ['mousemove', String(cx), String(cy), 'click', btn], {
       env: this.env(),
     });
+    void this.pushLiveFrame(60);
   }
 
   async scrollDirection(
@@ -495,6 +733,7 @@ class RealLinuxDesktopManager {
       ['mousemove', '--sync', String(cx), String(cy), 'click', '--repeat', String(repeat), btn],
       { env: this.env() },
     );
+    await this.pushLiveFrame(80);
     return `Scrolled ${direction} (${repeat} clicks) at (${cx}, ${cy})`;
   }
 
@@ -511,6 +750,7 @@ class RealLinuxDesktopManager {
         await execFileAsync('xdotool', ['key', 'Return'], { env: this.env() });
       }
     }
+    await this.pushLiveFrame(80);
     return `Typed ${text.length} chars into active Linux window`;
   }
 
@@ -564,6 +804,7 @@ class RealLinuxDesktopManager {
       }
     }
     await execFileAsync('xdotool', ['key', mapped], { env: this.env() });
+    await this.pushLiveFrame(80);
     return `Pressed X11 key ${mapped}`;
   }
 
@@ -574,41 +815,56 @@ class RealLinuxDesktopManager {
     await this.ensureStarted();
     const env = this.env();
     const norm = String(app).trim().toLowerCase();
+    const prevIds = new Set((await this.listWindows()).map((w) => w.windowId));
 
     if (payload?.command) {
-      spawn('bash', ['-lc', payload.command], { env, stdio: 'ignore', detached: true }).unref();
+      this.spawnSafe('bash', ['-lc', payload.command], { env, stdio: 'ignore', detached: true }).unref();
+      await this.waitForWindowChange(prevIds, 1000);
+      await this.pushLiveFrame(40);
       return `Launched Linux command: ${payload.command}`;
     }
 
+    let message = '';
     switch (norm) {
       case 'edge':
       case 'chromium':
       case 'chrome':
       case 'browser': {
         const url = payload?.url || 'https://modelcontextprotocol.io';
-        spawn(
-          'chromium',
+        let chromeBin = await this.findChromiumBinary();
+        if (!chromeBin) {
+          await this.ensureChromiumInstalled();
+          chromeBin = await this.findChromiumBinary();
+        }
+        if (!chromeBin) {
+          throw new Error('Chromium binary is not available on this Linux container.');
+        }
+        this.spawnSafe(
+          chromeBin,
           ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--window-size=1080,630', url],
           { env, stdio: 'ignore', detached: true },
         ).unref();
-        return `Launched Chromium (${url})`;
+        message = `Launched Chromium (${url})`;
+        break;
       }
       case 'powershell':
       case 'terminal':
       case 'bash':
       case 'xfce4-terminal':
-        spawn('xfce4-terminal', ['--geometry=88x24+120+80'], {
+        this.spawnSafe('xfce4-terminal', ['--geometry=88x24+120+80'], {
           env,
           stdio: 'ignore',
           detached: true,
         }).unref();
-        return 'Launched XFCE4 Terminal';
+        message = 'Launched XFCE4 Terminal';
+        break;
       case 'explorer':
       case 'files':
       case 'pcmanfm': {
         const dir = payload?.filePath ? this.resolveLinuxPath(payload.filePath) : '/root';
-        spawn('pcmanfm', [dir], { env, stdio: 'ignore', detached: true }).unref();
-        return `Launched PCManFM (${dir})`;
+        this.spawnSafe('pcmanfm', [dir], { env, stdio: 'ignore', detached: true }).unref();
+        message = `Launched PCManFM (${dir})`;
+        break;
       }
       case 'notepad':
       case 'mousepad':
@@ -616,27 +872,36 @@ class RealLinuxDesktopManager {
         const target = payload?.filePath
           ? this.resolveLinuxPath(payload.filePath)
           : '/root/Desktop/README_Claude.txt';
-        spawn('mousepad', [target], { env, stdio: 'ignore', detached: true }).unref();
-        return `Launched Mousepad (${target})`;
+        this.spawnSafe('mousepad', [target], { env, stdio: 'ignore', detached: true }).unref();
+        message = `Launched Mousepad (${target})`;
+        break;
       }
       case 'calculator':
       case 'galculator':
-        spawn('galculator', [], { env, stdio: 'ignore', detached: true }).unref();
-        return 'Launched Galculator';
+        this.spawnSafe('galculator', [], { env, stdio: 'ignore', detached: true }).unref();
+        message = 'Launched Galculator';
+        break;
       case 'taskmgr':
-        spawn('xfce4-terminal', ['--geometry=92x26+100+70', '-e', 'top'], {
+        this.spawnSafe('xfce4-terminal', ['--geometry=92x26+100+70', '-e', 'top'], {
           env,
           stdio: 'ignore',
           detached: true,
         }).unref();
-        return 'Launched System Monitor (top)';
+        message = 'Launched System Monitor (top)';
+        break;
       case 'settings':
-        spawn('pcmanfm', ['/root/.config'], { env, stdio: 'ignore', detached: true }).unref();
-        return 'Launched Config Directory (/root/.config)';
+        this.spawnSafe('pcmanfm', ['/root/.config'], { env, stdio: 'ignore', detached: true }).unref();
+        message = 'Launched Config Directory (/root/.config)';
+        break;
       default:
-        spawn('bash', ['-lc', norm], { env, stdio: 'ignore', detached: true }).unref();
-        return `Launched ${norm}`;
+        this.spawnSafe('bash', ['-lc', norm], { env, stdio: 'ignore', detached: true }).unref();
+        message = `Launched ${norm}`;
+        break;
     }
+
+    await this.waitForWindowChange(prevIds, 1400);
+    await this.pushLiveFrame(40);
+    return message;
   }
 
   resolveLinuxPath(inputPath?: string): string {
@@ -796,38 +1061,48 @@ class RealLinuxDesktopManager {
     }
 
     const id = target.windowId;
+    let message = '';
     switch (action) {
       case 'focus':
         await execFileAsync('xdotool', ['windowactivate', '--sync', id], { env });
-        return `Focused "${target.title}" (${id})`;
+        message = `Focused "${target.title}" (${id})`;
+        break;
       case 'minimize':
         await execFileAsync('xdotool', ['windowminimize', id], { env });
-        return `Minimized "${target.title}" (${id})`;
+        message = `Minimized "${target.title}" (${id})`;
+        break;
       case 'maximize':
         await execFileAsync(
           'xdotool',
           ['windowactivate', id, 'windowmove', id, '0', '0', 'windowsize', id, '1280', '682'],
           { env },
         );
-        return `Maximized "${target.title}" (${id}) to 1280x682`;
+        message = `Maximized "${target.title}" (${id}) to 1280x682`;
+        break;
       case 'move': {
         const x = Math.max(0, Math.min(SCREEN_W - 40, Math.round(opts?.x ?? target.x)));
         const y = Math.max(0, Math.min(SCREEN_H - 40, Math.round(opts?.y ?? target.y)));
         await execFileAsync('xdotool', ['windowmove', id, String(x), String(y)], { env });
-        return `Moved "${target.title}" (${id}) to (${x}, ${y})`;
+        message = `Moved "${target.title}" (${id}) to (${x}, ${y})`;
+        break;
       }
       case 'resize': {
         const w = Math.max(120, Math.min(SCREEN_W, Math.round(opts?.width ?? target.width)));
         const h = Math.max(100, Math.min(SCREEN_H, Math.round(opts?.height ?? target.height)));
         await execFileAsync('xdotool', ['windowsize', id, String(w), String(h)], { env });
-        return `Resized "${target.title}" (${id}) to ${w}x${h}`;
+        message = `Resized "${target.title}" (${id}) to ${w}x${h}`;
+        break;
       }
       case 'close':
         await execFileAsync('xdotool', ['windowclose', id], { env }).catch(() =>
           execFileAsync('xdotool', ['windowkill', id], { env }),
         );
-        return `Closed "${target.title}" (${id})`;
+        message = `Closed "${target.title}" (${id})`;
+        break;
     }
+
+    await this.pushLiveFrame(160);
+    return message;
   }
 
   async getSnapshotMeta() {
@@ -868,19 +1143,9 @@ class RealLinuxDesktopManager {
     }
     try {
       const tmpSnap = '/tmp/claude_x11_snap.jpg';
-      await execFileAsync('scrot', ['-o', '-q', '75', tmpSnap], { env: this.env() });
-      const jpgBase64 = fs.readFileSync(tmpSnap).toString('base64');
-      const frame: RealAgentFrame = {
-        mimeType: 'image/jpeg',
-        width: SCREEN_W,
-        height: SCREEN_H,
-        data: jpgBase64,
-        cursorX: 0,
-        cursorY: 0,
-        timestamp: Date.now(),
-      };
-      this.latestFrame = frame;
-      return frame;
+      await execFileAsync('scrot', ['-o', '-q', '80', tmpSnap], { env: this.env() });
+      const buf = fs.readFileSync(tmpSnap);
+      return this.emitFrame(buf, true);
     } catch {
       if (this.latestFrame?.data) {
         return this.latestFrame;

@@ -127,3 +127,62 @@ export function mapClientPointToScreen(
   const y = Math.max(0, Math.min(screenHeight - 1, Math.round(v * screenHeight)));
   return { x, y };
 }
+
+export function buildNonInteractiveAptInstallCmd(packages: string[]): string {
+  const clean = Array.from(
+    new Set(
+      packages
+        .map((p) => p.trim())
+        .filter((p) => /^[a-z0-9][a-z0-9+.-]+$/i.test(p)),
+    ),
+  );
+  if (clean.length === 0) {
+    return 'true';
+  }
+  const dpkgOpts =
+    '-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"';
+  return [
+    'export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1',
+    '(dpkg --configure -a --force-confdef --force-confold </dev/null || true)',
+    'apt-get update -qq </dev/null',
+    `apt-get install -y --no-install-recommends --fix-broken ${dpkgOpts} ${clean.join(' ')} </dev/null`,
+  ].join(' && ');
+}
+
+export function shouldBroadcastFrame(
+  prevBytes: Uint8Array | null,
+  nextBytes: Uint8Array,
+  elapsedSinceLastBroadcastMs: number,
+  keepaliveMs = 4000,
+): boolean {
+  if (!prevBytes || elapsedSinceLastBroadcastMs >= keepaliveMs) {
+    return true;
+  }
+  if (prevBytes.length !== nextBytes.length) {
+    return true;
+  }
+  for (let i = 0; i < nextBytes.length; i += 1) {
+    if (prevBytes[i] !== nextBytes[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function shouldSendToWsClient(
+  readyState: number,
+  bufferedAmount: number,
+  maxBufferedBytes = 192 * 1024,
+): boolean {
+  return readyState === 1 && bufferedAmount < maxBufferedBytes;
+}
+
+export function pickNewerFrame(
+  current: RealAgentFrame | null,
+  candidate: RealAgentFrame | null,
+): RealAgentFrame | null {
+  if (!candidate) return current;
+  if (!current) return candidate;
+  return candidate.timestamp >= current.timestamp ? candidate : current;
+}
+

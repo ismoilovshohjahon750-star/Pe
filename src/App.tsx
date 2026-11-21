@@ -9,6 +9,7 @@ import { RealWin10View } from './components/RealWin10View.tsx';
 import {
   createInitialLinuxStatus,
   createInitialRealAgentStatus,
+  pickNewerFrame,
   type ExecutionTarget,
   type LinuxDesktopStatus,
   type RealAgentFrame,
@@ -33,22 +34,38 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const shareStreamRef = useRef<MediaStream | null>(null);
   const shareTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastWsFrameAtRef = useRef<number>(0);
+  const jarvisSyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const syncLinuxFrame = useCallback(() => {
+    fetch('/api/linux/frame', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null }) => {
+        if (data.status) setLinuxStatus(data.status);
+        if (data.frame) {
+          setLinuxFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     let active = true;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
 
-    fetch('/api/linux/status')
+    fetch('/api/linux/status', { cache: 'no-store' })
       .then((r) => r.json())
       .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null }) => {
         if (!active) return;
         if (data.status) setLinuxStatus(data.status);
-        if (data.frame) setLinuxFrame(data.frame);
+        if (data.frame) {
+          setLinuxFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
+        }
       })
       .catch(() => {});
 
-    fetch('/api/real-win10/status')
+    fetch('/api/real-win10/status', { cache: 'no-store' })
       .then((r) => r.json())
       .then((data: { target?: ExecutionTarget; agent?: RealAgentStatus }) => {
         if (!active) return;
@@ -61,6 +78,10 @@ export default function App() {
 
     const connect = () => {
       if (!active) return;
+      const existing = wsRef.current;
+      if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
       wsRef.current = socket;
@@ -68,6 +89,7 @@ export default function App() {
       socket.onopen = () => {
         if (!active) return;
         attempt = 0;
+        syncLinuxFrame();
       };
 
       socket.onmessage = (evt) => {
@@ -82,11 +104,12 @@ export default function App() {
           if (msg.type === 'linux_status' && msg.status) {
             setLinuxStatus(msg.status as LinuxDesktopStatus);
           } else if (msg.type === 'linux_frame' && msg.frame) {
-            setLinuxFrame(msg.frame);
+            lastWsFrameAtRef.current = Date.now();
+            setLinuxFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
           } else if (msg.type === 'real_agent_status' && msg.status) {
             setRealAgentStatus(msg.status as RealAgentStatus);
           } else if (msg.type === 'real_agent_frame' && msg.frame) {
-            setRealAgentFrame(msg.frame);
+            setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
           } else if (msg.type === 'execution_target' && msg.target) {
             setExecutionTarget(msg.target);
           }
@@ -97,6 +120,7 @@ export default function App() {
 
       socket.onclose = () => {
         if (!active) return;
+        if (wsRef.current === socket) wsRef.current = null;
         const waitMs = Math.min(5000, 600 * Math.pow(1.5, attempt));
         attempt += 1;
         reconnectTimer = setTimeout(connect, waitMs);
@@ -107,16 +131,44 @@ export default function App() {
       };
     };
 
+    const handleWakeup = () => {
+      if (!active) return;
+      if (document.visibilityState === 'visible') {
+        syncLinuxFrame();
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          attempt = 0;
+          connect();
+        }
+      }
+    };
+
     connect();
+    document.addEventListener('visibilitychange', handleWakeup);
+    window.addEventListener('online', handleWakeup);
+
+    const wsWatchdog = setInterval(() => {
+      if (!active || document.visibilityState !== 'visible') return;
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        syncLinuxFrame();
+        connect();
+      } else if (Date.now() - lastWsFrameAtRef.current > 5500) {
+        syncLinuxFrame();
+      }
+    }, 4000);
 
     return () => {
       active = false;
+      clearInterval(wsWatchdog);
+      document.removeEventListener('visibilitychange', handleWakeup);
+      window.removeEventListener('online', handleWakeup);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (shareTimerRef.current) clearInterval(shareTimerRef.current);
+      if (jarvisSyncTimerRef.current) clearInterval(jarvisSyncTimerRef.current);
       shareStreamRef.current?.getTracks().forEach((t) => t.stop());
       wsRef.current?.close();
     };
-  }, []);
+  }, [syncLinuxFrame]);
 
   const sendWs = useCallback((payload: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -266,12 +318,43 @@ export default function App() {
             onScrollAt={(x, y, deltaY) => sendWs({ type: 'user:linux_scroll', x, y, deltaY })}
             onTypeText={(text, enter) => sendWs({ type: 'user:linux_type', text, enter })}
             onPressKey={(key) => sendWs({ type: 'user:linux_key', key })}
+            onRetry={() => {
+              setLinuxStatus((prev) => ({ ...prev, error: null }));
+              void fetch('/api/linux/restart', { method: 'POST' })
+                .then((r) => r.json())
+                .then((data: { status?: LinuxDesktopStatus }) => {
+                  if (data.status) setLinuxStatus(data.status);
+                })
+                .catch(() => {});
+            }}
           />
         )}
 
         <JarvisModal
           open={jarvisOpen}
           onClose={() => setJarvisOpen(false)}
+          onToolActivity={(ev) => {
+            if (showingRealPc) return;
+            if (ev.type === 'tool_start') {
+              if (!jarvisSyncTimerRef.current) {
+                jarvisSyncTimerRef.current = setInterval(() => {
+                  if (Date.now() - lastWsFrameAtRef.current > 550) {
+                    syncLinuxFrame();
+                  }
+                }, 650);
+              }
+            } else if (ev.type === 'tool_done') {
+              if (Date.now() - lastWsFrameAtRef.current > 150) {
+                syncLinuxFrame();
+              }
+            } else if (ev.type === 'done') {
+              if (jarvisSyncTimerRef.current) {
+                clearInterval(jarvisSyncTimerRef.current);
+                jarvisSyncTimerRef.current = null;
+              }
+              syncLinuxFrame();
+            }
+          }}
         />
       </main>
 

@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildNonInteractiveAptInstallCmd,
   createInitialLinuxStatus,
   createInitialRealAgentStatus,
   mapClientPointToScreen,
+  pickNewerFrame,
   resolveMcpExecutionMode,
+  shouldBroadcastFrame,
+  shouldSendToWsClient,
 } from './bridge.ts';
 
 test('initial real agent and linux statuses start cleanly', () => {
@@ -65,4 +69,47 @@ test('mapClientPointToScreen maps landscape and 90deg rotated portrait coordinat
     true,
   );
   assert.deepEqual(rotatedBottomLeft, { x: 1279, y: 719 });
+});
+
+test('buildNonInteractiveAptInstallCmd enforces noninteractive dpkg flags and sanitizes packages', () => {
+  assert.equal(buildNonInteractiveAptInstallCmd([]), 'true');
+  const cmd = buildNonInteractiveAptInstallCmd([
+    'xvfb',
+    'xvfb',
+    'openbox',
+    'invalid;rm -rf /',
+    'xfce4-terminal',
+  ]);
+  assert.ok(cmd.includes('DEBIAN_FRONTEND=noninteractive'));
+  assert.ok(cmd.includes('--force-confdef'));
+  assert.ok(cmd.includes('--force-confold'));
+  assert.ok(cmd.includes('--no-install-recommends'));
+  assert.ok(cmd.includes('</dev/null'));
+  assert.ok(cmd.includes('xvfb openbox xfce4-terminal'));
+  assert.ok(!cmd.includes('rm -rf'));
+});
+
+test('shouldBroadcastFrame deduplicates identical idle frames until keepalive interval', () => {
+  const a = new Uint8Array([1, 2, 3, 4]);
+  const b = new Uint8Array([1, 2, 3, 4]);
+  const c = new Uint8Array([1, 2, 9, 4]);
+  assert.equal(shouldBroadcastFrame(null, a, 0), true);
+  assert.equal(shouldBroadcastFrame(a, b, 500), false);
+  assert.equal(shouldBroadcastFrame(a, b, 4500), true);
+  assert.equal(shouldBroadcastFrame(a, c, 100), true);
+});
+
+test('shouldSendToWsClient drops slow backed-up clients before latency queue builds up', () => {
+  assert.equal(shouldSendToWsClient(1, 0), true);
+  assert.equal(shouldSendToWsClient(1, 100_000), true);
+  assert.equal(shouldSendToWsClient(1, 300_000), false);
+  assert.equal(shouldSendToWsClient(3, 0), false);
+});
+
+test('pickNewerFrame keeps monotonic newest frame timestamp', () => {
+  const f1 = { mimeType: 'image/jpeg', width: 1280, height: 720, data: 'a', cursorX: 0, cursorY: 0, timestamp: 1000 };
+  const f2 = { mimeType: 'image/jpeg', width: 1280, height: 720, data: 'b', cursorX: 0, cursorY: 0, timestamp: 2000 };
+  assert.equal(pickNewerFrame(null, f1), f1);
+  assert.equal(pickNewerFrame(f2, f1), f2);
+  assert.equal(pickNewerFrame(f1, f2), f2);
 });

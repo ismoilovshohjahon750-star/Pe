@@ -3,8 +3,11 @@ import test from 'node:test';
 import { getMcpToolManifest } from './mcp.ts';
 import {
   buildGeminiContents,
+  buildJarvisSystemInstruction,
   buildJarvisToolDeclarations,
+  extractJarvisReplyText,
   formatGeminiError,
+  normalizeAudioMimeType,
   pruneOldScreenshots,
   scaleNormalizedPoint,
   stripBase64DataUrl,
@@ -82,4 +85,31 @@ test('formatGeminiError maps missing key and upstream status codes accurately', 
   );
   assert.equal(unavailable.status, 503);
   assert.ok(!unavailable.message.startsWith('{'));
+  assert.equal(formatGeminiError(new Error('This operation was aborted')).status, 504);
+});
+
+test('extractJarvisReplyText excludes thought parts and stray leading punctuation', () => {
+  const cleaned = extractJarvisReplyText(
+    [
+      { thought: true, text: 'Internal thinking...' },
+      { text: 'thought\nTerminal terminali muvaffaqiyatli ochildi.' },
+      { text: ', terminal ochildi.' },
+    ],
+    'fallback',
+  );
+  assert.equal(cleaned, 'terminal ochildi.');
+});
+
+test('buildJarvisSystemInstruction credits shoh_tech and establishes J.A.R.V.I.S. persona', () => {
+  const prompt = buildJarvisSystemInstruction('Debian GNU/Linux 12 X11 desktop (1280x720)');
+  assert.ok(prompt.includes('shoh_tech'));
+  assert.ok(prompt.includes('Toni Stark EMAS'));
+  assert.ok(prompt.includes('Janob'));
+  assert.ok(prompt.includes('1280x720'));
+});
+
+test('normalizeAudioMimeType strips codecs parameters cleanly', () => {
+  assert.equal(normalizeAudioMimeType('audio/webm;codecs=opus'), 'audio/webm');
+  assert.equal(normalizeAudioMimeType('AUDIO/MP4; codecs=mp4a.40.2'), 'audio/mp4');
+  assert.equal(normalizeAudioMimeType(''), 'audio/webm');
 });

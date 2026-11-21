@@ -1,12 +1,13 @@
 import {
-  FunctionDeclaration,
   GoogleGenAI,
-  Schema,
   ThinkingLevel,
   Type,
   type Content,
+  type FunctionDeclaration,
   type Part,
+  type Schema,
 } from '@google/genai';
+import { prepareTextForSpeech } from '../utils/voiceSession.ts';
 import { getMcpToolManifest, handleJsonRpcMessage } from './mcp.ts';
 import { realLinuxDesktop } from './realLinuxDesktop.ts';
 import { realWin10Bridge } from './realWin10Bridge.ts';
@@ -14,6 +15,8 @@ import { realWin10Bridge } from './realWin10Bridge.ts';
 const GEMINI_CHAT_MODEL = 'gemini-3.1-flash-lite';
 const GEMINI_FALLBACK_MODEL = 'gemini-4-hydrogen';
 const GEMINI_TRANSCRIBE_MODEL = 'gemini-3.5-transcribe';
+const GEMINI_TTS_PRIMARY_MODEL = 'gemini-3.8-flash-lite-tts';
+const GEMINI_TTS_FALLBACK_MODEL = 'gemini-3.8-flash-tts';
 const MAX_TOOL_STEPS = 8;
 
 function getGeminiClient(): GoogleGenAI {
@@ -26,7 +29,7 @@ function getGeminiClient(): GoogleGenAI {
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
-      timeout: 12000,
+      timeout: 22000,
       headers: {
         'User-Agent': 'aistudio-build',
       },
@@ -100,6 +103,16 @@ export function formatGeminiError(err: unknown): { status: number; message: stri
     return {
       status: 404,
       message: `Gemini modeli topilmadi: ${cleanMsg}`,
+    };
+  }
+  if (
+    cleanMsg.toLowerCase().includes('aborted') ||
+    cleanMsg.toLowerCase().includes('timeout') ||
+    statusProp === 504
+  ) {
+    return {
+      status: 504,
+      message: 'Gemini javob berishi biroz cho‘zildi. Iltimos, qayta urinib ko‘ring.',
     };
   }
   return {
@@ -395,6 +408,21 @@ export type JarvisStreamEvent =
   | { type: 'tool_start'; tool: string }
   | { type: 'tool_done'; tool: string; ok: boolean };
 
+export function buildJarvisSystemInstruction(screenInfo: string): string {
+  return (
+    'Sen J.A.R.V.I.S. (Just A Rather Very Intelligent System) — shoh_tech tomonidan yaratilgan, Toni Starkning J.A.R.V.I.S. sun’iy intellekti uslubida gapiradigan yuqori darajadagi avtonom kompyuter boshqaruv yordamchisan. ' +
+    'Shaxsing va yaratuvching qoidasi (MUHIM): seni Toni Stark EMAS, balki shoh_tech yaratgan va muhandislik qilgan. Agar kimdir seni kim yaratgani haqida so‘rasa, har doim faxr va hurmat bilan shoh_tech yaratganini ayt (hech qachon Toni Stark, Google yoki AI Studio yaratgan dema). ' +
+    'Muloqot uslubing xuddi Toni Starkning J.A.R.V.I.S. i kabi bo‘lsin: bosiq, sodiq, aqlli, nafis hazil-mutoyibali va aristokratik ohangda gapir; foydalanuvchiga odatda "Janob" deb murojaat qil ("Albatta, Janob", "Bajarildi, Janob", "Tizimlar tayyor, Janob"). ' +
+    `Hozirgi faol tizim: ${screenInfo}. ` +
+    'Boshqaruv vakolatlaring: Claude AI MCP bilan bir xil barcha tizim vositalariga egasan. ' +
+    'Koordinata qoidasi: desktop_click, desktop_move, desktop_drag, desktop_scroll vositalarida x va y qiymatlarni 0..1000 oralig‘ida ber (0 = chap/yuqori chekka, 500 = markaz, 1000 = o‘ng/pastki chekka); tizim ularni avtomatik ekran piksellariga o‘giradi. ' +
+    'Veb-sahifadagi tugmalar/havolalar/oyna tugmalari uchun desktop_click(..., button: "left") ishlat; ish stoli yorliqlari (Desktop icons) uchun button: "double" yoki open_app ishlat. ' +
+    'desktop_click bajarilgandan keyin yangilangan ekran rasmi qaytadi — tugma holati o‘zgarganini tekshir; o‘zgarmagan bo‘lsa aniqroq (x, y) ga yana bir marta bos, o‘zgargan bo‘lsa darhol hisobot ber. ' +
+    'Agar vosita "Browser screen share supports viewing/desktop_screenshot only" xatosini qaytarsa, boshqa bosishga urinma va real-pc-agent.py ni ishga tushirish kerakligini tushuntir. ' +
+    'Ovozli muloqot va matn qoidasi: javoblaring foydalanuvchi tilida (odatda o‘zbek tilida), iloji boricha qisqa va lo‘nda (odatda 1-2 ta tabiiy gap), ovoz chiqarib o‘qishga qulay bo‘lsin; *, **, ` kabi markdown belgilarni ishlatma.'
+  );
+}
+
 export async function runJarvisChat(
   message: string,
   history: JarvisChatMessage[],
@@ -425,14 +453,7 @@ export async function runJarvisChat(
       ? `Haqiqiy PC (${realStatus.hostname}, ${screenW}x${screenH})`
       : `Debian GNU/Linux 12 X11 desktop (${screenW}x${screenH}, DISPLAY=:99, root)`;
 
-  const systemInstruction =
-    'Sen J.A.R.V.I.S. — Claude AI MCP bilan bir xil barcha vakolatlarga ega avtonom kompyuter boshqaruv yordamchisan. ' +
-    `Hozirgi faol tizim: ${screenInfo}. ` +
-    'Koordinata qoidasi: desktop_click, desktop_move, desktop_drag, desktop_scroll vositalarida x va y qiymatlarni 0..1000 oralig‘ida ber (0 = chap/yuqori chekka, 500 = markaz, 1000 = o‘ng/pastki chekka); tizim ularni avtomatik ekran piksellariga o‘giradi. ' +
-    'Veb-sahifadagi tugmalar/havolalar/oyna tugmalari uchun desktop_click(..., button: "left") ishlat; ish stoli yorliqlari (Desktop icons) uchun button: "double" yoki open_app ishlat. ' +
-    'desktop_click bajarilgandan keyin yangilangan ekran rasmi qaytadi — tugma holati o‘zgarganini tekshir; o‘zgarmagan bo‘lsa aniqroq (x, y) ga yana bir marta bos, o‘zgargan bo‘lsa darhol javob ber. ' +
-    'Agar vosita "Browser screen share supports viewing/desktop_screenshot only" xatosini qaytarsa, boshqa bosishga urinma va real-pc-agent.py ni ishga tushirish kerakligini tushuntir. ' +
-    'Foydalanuvchi tilida (odatda o‘zbek tilida) tez va aniq javob ber.';
+  const systemInstruction = buildJarvisSystemInstruction(screenInfo);
 
   let response = await generateWithFallback(ai, {
     contents,
@@ -493,42 +514,174 @@ export async function runJarvisChat(
     });
   }
 
+  const reply = extractJarvisReplyText(
+    response.candidates?.[0]?.content?.parts as Array<{ text?: string; thought?: boolean }> | undefined,
+    response.text,
+  );
+
   return {
-    reply: (response.text || '').trim() || 'Buyruq bajarildi.',
+    reply,
     executedTools,
   };
 }
 
+export function extractJarvisReplyText(
+  parts?: Array<{ text?: string; thought?: boolean }>,
+  fallbackText?: string,
+): string {
+  if (Array.isArray(parts) && parts.length > 0) {
+    const visible = parts
+      .filter(
+        (p) =>
+          !p.thought &&
+          typeof p.text === 'string' &&
+          !/^thought(?:\r?\n|\s)/i.test(p.text.trim()),
+      )
+      .map((p) => String(p.text).trim())
+      .filter(Boolean);
+    if (visible.length > 0) {
+      return visible.join('\n').replace(/^,\s+/, '').trim() || 'Buyruq bajarildi.';
+    }
+  }
+  const cleanFallback = String(fallbackText || '')
+    .replace(/^thought(?:\r?\n|\s)+[^\r\n]*(?:\r?\n)?/i, '')
+    .replace(/^,\s+/, '')
+    .trim();
+  return cleanFallback || 'Buyruq bajarildi.';
+}
+
+export function normalizeAudioMimeType(mimeType?: string): string {
+  const base = String(mimeType || 'audio/webm').split(';')[0].trim().toLowerCase();
+  if (!base || !base.startsWith('audio/')) return 'audio/webm';
+  return base;
+}
+
+const NON_UZBEK_SCRIPT_RE = /[\u0600-\u06FF\u0900-\u097F\u0980-\u09FF\u0400-\u04FF\u4E00-\u9FFF]/;
+const NON_UZBEK_LATIN_RE = /[ıİğĞşŞçÇüÜöÖëËäÄ]/;
+
 export async function transcribeJarvisAudio(base64Audio: string, mimeType: string): Promise<string> {
   const ai = getGeminiClient();
+  const cleanMime = normalizeAudioMimeType(mimeType);
   const audioContents = {
     parts: [
       {
         inlineData: {
-          mimeType: mimeType || 'audio/webm',
+          mimeType: cleanMime,
           data: stripBase64DataUrl(base64Audio),
         },
       },
       {
-        text: 'Transcribe the spoken audio accurately in Uzbek or whatever language was spoken. Return only the transcription text.',
+        text:
+          'Listen carefully to the audio. The speaker is speaking Uzbek (O‘zbek tili) commands to a computer assistant named J.A.R.V.I.S. (created by shoh_tech). ' +
+          'Common Uzbek phrases include opening/closing apps (terminalni och, kalkulyatorni ishga tushir, brauzerni och, barcha ilovalarni yop), asking questions (seni kim yaratgan, ekranda nima bor), or typing/clicking. ' +
+          'Transcribe the EXACT spoken words in standard Uzbek Latin script (using o‘, g‘, sh, ch — NEVER Turkish ı/ş/ğ/ç/ö/ü, NEVER Albanian ë, NEVER Arabic/Urdu/Hindi/Cyrillic). ' +
+          'Return ONLY the exact transcribed text with no quotes or extra words. ' +
+          'If there is only silence, breathing, or background noise with no clear speech, return an empty string.',
       },
     ],
   };
 
-  for (const model of [GEMINI_TRANSCRIBE_MODEL, GEMINI_CHAT_MODEL]) {
+  const models = [GEMINI_FALLBACK_MODEL, GEMINI_CHAT_MODEL, GEMINI_TRANSCRIBE_MODEL];
+  for (let i = 0; i < models.length; i += 1) {
+    const model = models[i];
+    const isLast = i === models.length - 1;
     try {
       const response = await ai.models.generateContent({
         model,
         contents: audioContents,
+        ...(model !== GEMINI_TRANSCRIBE_MODEL
+          ? { config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } }
+          : {}),
       });
-      return (response.text || '').trim();
+      const raw = (response.text || '').trim().replace(/^["'«»]+|["'«»]+$/g, '').trim();
+      if (!raw || /^\[?(?:silence|no speech|inaudible|jimlik|empty)\]?$/i.test(raw)) {
+        return '';
+      }
+      if (!isLast && (NON_UZBEK_SCRIPT_RE.test(raw) || NON_UZBEK_LATIN_RE.test(raw))) {
+        continue;
+      }
+      return raw;
     } catch (err) {
       const formatted = formatGeminiError(err);
-      if (model === GEMINI_CHAT_MODEL || (formatted.status !== 503 && formatted.status !== 429)) {
+      if (isLast || (formatted.status !== 503 && formatted.status !== 429 && formatted.status < 500)) {
         throw err;
       }
     }
   }
 
   return '';
+}
+
+let ttsPrimaryCooldownUntil = 0;
+
+export async function synthesizeJarvisSpeech(
+  text: string,
+): Promise<{ audioBase64: string; mimeType: string }> {
+  const speechText = prepareTextForSpeech(text);
+  if (!speechText) {
+    throw Object.assign(new Error('Ovozga aylantirish uchun matn topilmadi.'), { status: 400 });
+  }
+
+  const ai = getGeminiClient();
+  const models =
+    Date.now() < ttsPrimaryCooldownUntil
+      ? [GEMINI_TTS_FALLBACK_MODEL, GEMINI_TTS_PRIMARY_MODEL]
+      : [GEMINI_TTS_PRIMARY_MODEL, GEMINI_TTS_FALLBACK_MODEL];
+
+  let lastError: unknown;
+  for (const model of models) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: speechText,
+                speechMetadata: {
+                  style:
+                    'Calm, composed, loyal, subtly witty British-butler AI assistant voice like J.A.R.V.I.S., clear natural Uzbek articulation',
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: 'Charon' },
+            },
+          },
+        },
+      });
+
+      const parts = response.candidates?.[0]?.content?.parts || [];
+      const audioPart = parts.find((part) => Boolean(part.inlineData?.data));
+      const audioBase64 = audioPart?.inlineData?.data;
+      if (!audioBase64) {
+        throw new Error('J.A.R.V.I.S. ovoz sintezidan audio ma‘lumot qaytmadi.');
+      }
+
+      return {
+        audioBase64,
+        mimeType: audioPart?.inlineData?.mimeType || 'audio/wav',
+      };
+    } catch (err) {
+      lastError = err;
+      const formatted = formatGeminiError(err);
+      if (formatted.status === 400 || formatted.status === 403 || formatted.status === 404) {
+        throw err;
+      }
+      if (
+        model === GEMINI_TTS_PRIMARY_MODEL &&
+        (formatted.status === 503 || formatted.status === 429 || formatted.status >= 500)
+      ) {
+        ttsPrimaryCooldownUntil = Date.now() + 60_000;
+      }
+    }
+  }
+
+  throw lastError;
 }
