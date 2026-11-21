@@ -27,6 +27,7 @@ import {
   transcribeJarvisAudio,
   type JarvisChatMessage,
 } from './src/server/jarvis.ts';
+import { getSettingsKeys, saveSettingsKeys } from './src/server/settingsManager.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -239,6 +240,27 @@ async function startServer() {
     } catch (err) {
       const formatted = formatGeminiError(err);
       res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  app.get('/api/settings/keys', (_req, res) => {
+    try {
+      const keys = getSettingsKeys();
+      res.json(keys);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/settings/keys', (req, res) => {
+    try {
+      const geminiKeys = Array.isArray(req.body?.geminiKeys) ? req.body.geminiKeys : undefined;
+      const groqKeys = Array.isArray(req.body?.groqKeys) ? req.body.groqKeys : undefined;
+      const openRouterKeys = Array.isArray(req.body?.openRouterKeys) ? req.body.openRouterKeys : undefined;
+      saveSettingsKeys({ geminiKeys, groqKeys, openRouterKeys });
+      res.json({ ok: true, keys: getSettingsKeys() });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
     }
   });
 

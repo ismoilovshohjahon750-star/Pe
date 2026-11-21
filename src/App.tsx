@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Cpu, Monitor, Plug } from 'lucide-react';
+import { Cpu, Monitor, Plug, Settings } from 'lucide-react';
 import { LIQUID_PILL_BTN } from './components/liquidGlass.ts';
 import { JarvisModal } from './components/JarvisModal.tsx';
 import { McpConnectModal } from './components/McpConnectModal.tsx';
 import { PcConnectModal } from './components/PcConnectModal.tsx';
+import { SettingsModal } from './components/SettingsModal.tsx';
 import { RealLinuxView } from './components/RealLinuxView.tsx';
 import { RealWin10View } from './components/RealWin10View.tsx';
 import {
@@ -28,6 +29,7 @@ export default function App() {
   const [executionTarget, setExecutionTarget] = useState<ExecutionTarget>('linux');
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [pcModalOpen, setPcModalOpen] = useState(false);
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [jarvisOpen, setJarvisOpen] = useState(false);
   const [browserSharing, setBrowserSharing] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
@@ -296,6 +298,10 @@ export default function App() {
           <Plug className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
           <span className="relative z-10">MCP Ulash</span>
         </button>
+        <button type="button" onClick={() => setSettingsModalOpen(true)} className={LIQUID_PILL_BTN}>
+          <Settings className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+          <span className="relative z-10">Sozlamalar</span>
+        </button>
       </header>
 
       <main className="flex-1 min-h-0 flex flex-col overflow-hidden">
@@ -373,6 +379,11 @@ export default function App() {
       <McpConnectModal
         open={mcpModalOpen}
         onClose={() => setMcpModalOpen(false)}
+      />
+
+      <SettingsModal
+        open={settingsModalOpen}
+        onClose={() => setSettingsModalOpen(false)}
       />
     </div>
   );
