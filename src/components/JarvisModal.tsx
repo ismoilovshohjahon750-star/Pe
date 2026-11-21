@@ -572,7 +572,9 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
               setSpeechActive(vadState.speechStarted);
 
               if (step.action === 'restart_idle' || step.action === 'finish_speech') {
-                stopReasonRef.current = step.action === 'restart_idle' ? 'idle' : 'speech';
+                const isTooShort = step.action === 'finish_speech' && vadState.voicedMs < 240;
+                stopReasonRef.current =
+                  step.action === 'restart_idle' || isTooShort ? 'idle' : 'speech';
                 if (vadIntervalRef.current !== null) {
                   window.clearInterval(vadIntervalRef.current);
                   vadIntervalRef.current = null;
@@ -721,9 +723,15 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
           errName === 'NotAllowedError' ||
           errName === 'PermissionDeniedError' ||
           rawErr.toLowerCase().includes('permission');
+        const isNotFound =
+          errName === 'NotFoundError' ||
+          errName === 'DevicesNotFoundError' ||
+          rawErr.toLowerCase().includes('device not found');
         const friendlyError = isDenied
           ? 'Mikrofon ruxsati bloklangan (Permission denied). Sahifani yangilab qayta urinib ko‘ring yoki Chrome manzil satridagi ruxsatlar bo‘limidan Mikrofonni yoqing.'
-          : rawErr || 'Mikrofonga ulanib bo‘lmadi.';
+          : isNotFound
+            ? 'Mikrofon qurilmasi topilmadi. Qurilmangizda mikrofon ulanganligini tekshiring.'
+            : rawErr || 'Mikrofonga ulanib bo‘lmadi.';
         setMessages((prev) => [
           ...prev,
           {

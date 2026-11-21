@@ -7,25 +7,41 @@ import {
   type Part,
   type Schema,
 } from '@google/genai';
-import { prepareTextForSpeech } from '../utils/voiceSession.ts';
+import { execFile } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import {
+  classifyUpstreamFailure,
+  cleanUzbekTranscript,
+  prepareTextForUzbekTts,
+  sharedKeyPool,
+  type AiProvider,
+} from './aiProviders.ts';
 import { getMcpToolManifest, handleJsonRpcMessage } from './mcp.ts';
 import { realLinuxDesktop } from './realLinuxDesktop.ts';
 import { realWin10Bridge } from './realWin10Bridge.ts';
+
+const execFileAsync = promisify(execFile);
 
 const GEMINI_CHAT_MODEL = 'gemini-3.1-flash-lite';
 const GEMINI_FALLBACK_MODEL = 'gemini-4-hydrogen';
 const GEMINI_TRANSCRIBE_MODEL = 'gemini-3.5-transcribe';
 const GEMINI_TTS_PRIMARY_MODEL = 'gemini-3.8-flash-lite-tts';
 const GEMINI_TTS_FALLBACK_MODEL = 'gemini-3.8-flash-tts';
+
+const GROQ_CHAT_MODELS = ['llama-3.3-70b-versatile', 'meta-llama/llama-4-scout-17b-16e-instruct'];
+const GROQ_STT_MODEL = 'whisper-large-v3';
+const GROQ_TTS_MODEL = 'canopylabs/orpheus-v1-english';
+
+const OPENROUTER_CHAT_MODELS = ['google/gemini-2.5-flash', 'openai/gpt-4o-mini'];
+const OPENROUTER_STT_MODEL = 'google/gemini-2.5-flash';
+const OPENROUTER_TTS_MODEL = 'openai/gpt-4o-audio-preview';
+
 const MAX_TOOL_STEPS = 8;
 
-function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    throw new Error(
-      'GEMINI_API_KEY sozlanmagan. Iltimos, Settings > Secrets bo‘limidan GEMINI_API_KEY kiriting.',
-    );
-  }
+function createGeminiClient(apiKey: string): GoogleGenAI {
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
@@ -35,6 +51,25 @@ function getGeminiClient(): GoogleGenAI {
       },
     },
   });
+}
+
+function getOrderedKeysForAttempt(provider: AiProvider): string[] {
+  return sharedKeyPool.getAvailableKeys(provider);
+}
+
+function hasBackupProvidersReady(): boolean {
+  return (
+    sharedKeyPool.getAvailableKeys('groq').length > 0 ||
+    sharedKeyPool.getAvailableKeys('openrouter').length > 0
+  );
+}
+
+function hasAnyAiProviderKey(): boolean {
+  return (
+    sharedKeyPool.getAllKeys('gemini').length > 0 ||
+    sharedKeyPool.getAllKeys('groq').length > 0 ||
+    sharedKeyPool.getAllKeys('openrouter').length > 0
+  );
 }
 
 export function stripBase64DataUrl(raw: string): string {
@@ -70,11 +105,12 @@ export function formatGeminiError(err: unknown): { status: number; message: stri
       ? Number((err as { status?: unknown }).status)
       : NaN;
 
-  if (cleanMsg.includes('GEMINI_API_KEY')) {
+  if (cleanMsg.includes('GEMINI_API_KEY') || cleanMsg.includes('AI API kaliti')) {
     return { status: 503, message: cleanMsg };
   }
   if (
     statusProp === 403 ||
+    statusProp === 401 ||
     rawMsg.includes('PERMISSION_DENIED') ||
     rawMsg.includes('API_KEY_INVALID') ||
     cleanMsg.toLowerCase().includes('api key not valid') ||
@@ -83,26 +119,26 @@ export function formatGeminiError(err: unknown): { status: number; message: stri
     return {
       status: statusProp === 400 ? 400 : 403,
       message:
-        'Gemini API kaliti yaroqsiz yoki ruxsat berilmagan. Iltimos, Settings > Secrets bo‘limidan GEMINI_API_KEY ni tekshiring.',
+        'API kaliti yaroqsiz yoki ruxsat berilmagan. Iltimos, .env yoki Settings > Secrets bo‘limidagi kalitlarni tekshiring.',
     };
   }
-  if (statusProp === 429 || rawMsg.includes('RESOURCE_EXHAUSTED')) {
+  if (statusProp === 429 || statusProp === 402 || rawMsg.includes('RESOURCE_EXHAUSTED')) {
     return {
-      status: 429,
-      message: 'Gemini API so‘rov limiti tugadi (429). Biroz kutib qayta urinib ko‘ring.',
+      status: statusProp === 402 ? 402 : 429,
+      message: 'API so‘rov limiti tugadi (429). Zaxira kalit va provayderlar ham band — birozdan keyin qayta urining.',
     };
   }
   if (statusProp === 503 || rawMsg.includes('UNAVAILABLE')) {
     return {
       status: 503,
       message:
-        'Gemini serveri hozir band (503). Iltimos, bir necha soniyadan keyin qayta yuboring.',
+        'AI serveri hozir band (503). Iltimos, bir necha soniyadan keyin qayta yuboring.',
     };
   }
   if (statusProp === 404 || rawMsg.includes('NOT_FOUND')) {
     return {
       status: 404,
-      message: `Gemini modeli topilmadi: ${cleanMsg}`,
+      message: `AI modeli topilmadi: ${cleanMsg}`,
     };
   }
   if (
@@ -112,7 +148,7 @@ export function formatGeminiError(err: unknown): { status: number; message: stri
   ) {
     return {
       status: 504,
-      message: 'Gemini javob berishi biroz cho‘zildi. Iltimos, qayta urinib ko‘ring.',
+      message: 'AI javob berishi biroz cho‘zildi. Iltimos, qayta urinib ko‘ring.',
     };
   }
   return {
@@ -123,46 +159,66 @@ export function formatGeminiError(err: unknown): { status: number; message: stri
 
 let primaryCooldownUntil = 0;
 
-async function generateWithFallback(
-  ai: GoogleGenAI,
-  params: {
-    contents: Content[];
-    systemInstruction: string;
-    toolDeclarations?: FunctionDeclaration[];
-  },
-) {
+async function generateGeminiWithKeyRotation(params: {
+  contents: Content[];
+  systemInstruction: string;
+  toolDeclarations?: FunctionDeclaration[];
+}) {
   const models =
     Date.now() < primaryCooldownUntil
       ? [GEMINI_FALLBACK_MODEL, GEMINI_CHAT_MODEL]
       : [GEMINI_CHAT_MODEL, GEMINI_FALLBACK_MODEL];
   const prunedContents = pruneOldScreenshots(params.contents, 1);
+  const allowCooledFallback = !hasBackupProvidersReady();
   let lastError: unknown;
+  let triedAny = false;
 
   for (const model of models) {
-    try {
-      return await ai.models.generateContent({
-        model,
-        contents: prunedContents,
-        config: {
-          systemInstruction: params.systemInstruction,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          ...(params.toolDeclarations
-            ? { tools: [{ functionDeclarations: params.toolDeclarations }] }
-            : {}),
-        },
-      });
-    } catch (err) {
-      lastError = err;
-      const formatted = formatGeminiError(err);
-      if (formatted.status === 400 || formatted.status === 403 || formatted.status === 404) {
-        throw err;
-      }
-      if (model === GEMINI_CHAT_MODEL && (formatted.status === 503 || formatted.status === 429 || formatted.status >= 500)) {
-        primaryCooldownUntil = Date.now() + 60_000;
+    const keys = sharedKeyPool.getAvailableKeysForModel(
+      'gemini',
+      model,
+      process.env,
+      Date.now(),
+      allowCooledFallback,
+    );
+    for (const apiKey of keys) {
+      triedAny = true;
+      const ai = createGeminiClient(apiKey);
+      try {
+        const res = await ai.models.generateContent({
+          model,
+          contents: prunedContents,
+          config: {
+            systemInstruction: params.systemInstruction,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            ...(params.toolDeclarations
+              ? { tools: [{ functionDeclarations: params.toolDeclarations }] }
+              : {}),
+          },
+        });
+        sharedKeyPool.markModelHealthy('gemini', model, apiKey);
+        return res;
+      } catch (err) {
+        lastError = err;
+        const info = classifyUpstreamFailure(err);
+        if (info.status === 400) {
+          throw err;
+        }
+        if (info.keyInvalid) {
+          sharedKeyPool.markFailed('gemini', apiKey, info.cooldownMs);
+        } else if (info.shouldRotateKey) {
+          sharedKeyPool.markModelFailed('gemini', model, apiKey, info.cooldownMs);
+          if (model === GEMINI_CHAT_MODEL && (info.status === 503 || info.status === 429)) {
+            primaryCooldownUntil = Date.now() + 30_000;
+          }
+        }
       }
     }
   }
 
+  if (!triedAny) {
+    throw Object.assign(new Error('Barcha Gemini API kalitlari band yoki sozlanmagan.'), { status: 429 });
+  }
   throw lastError;
 }
 
@@ -423,12 +479,244 @@ export function buildJarvisSystemInstruction(screenInfo: string): string {
   );
 }
 
+function toOpenAiSchemaType(schemaType: unknown): string {
+  switch (schemaType) {
+    case Type.NUMBER:
+    case Type.INTEGER:
+      return 'number';
+    case Type.BOOLEAN:
+      return 'boolean';
+    case Type.ARRAY:
+      return 'array';
+    case Type.OBJECT:
+      return 'object';
+    default:
+      return 'string';
+  }
+}
+
+function buildOpenAiTools(declarations: FunctionDeclaration[]) {
+  return declarations.map((fn) => {
+    const props: Record<string, Record<string, unknown>> = {};
+    const rawProps = fn.parameters?.properties || {};
+    for (const [key, val] of Object.entries(rawProps)) {
+      const p: Record<string, unknown> = {
+        type: toOpenAiSchemaType(val.type),
+      };
+      if (val.description) p.description = val.description;
+      if (val.enum) p.enum = val.enum;
+      props[key] = p;
+    }
+    return {
+      type: 'function',
+      function: {
+        name: fn.name,
+        description: fn.description || '',
+        parameters: {
+          type: 'object',
+          properties: props,
+          ...(fn.parameters?.required ? { required: fn.parameters.required } : {}),
+        },
+      },
+    };
+  });
+}
+
+interface OpenAiChatResponse {
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+      audio?: { data?: string; format?: string };
+      tool_calls?: Array<{
+        id: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+  }>;
+  error?: { message?: string; code?: number | string };
+}
+
+async function postOpenAiCompatible(
+  provider: 'groq' | 'openrouter',
+  apiKey: string,
+  endpointPath: string,
+  body: Record<string, unknown>,
+  timeoutMs = 22000,
+): Promise<Response> {
+  const baseUrl =
+    provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://openrouter.ai/api/v1';
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  };
+  if (provider === 'openrouter') {
+    headers['HTTP-Referer'] = process.env.APP_URL || 'http://localhost:3000';
+    headers['X-Title'] = 'J.A.R.V.I.S. AI Desktop';
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(`${baseUrl}${endpointPath}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runOpenAiProviderChat(
+  provider: 'groq' | 'openrouter',
+  params: {
+    message: string;
+    history: JarvisChatMessage[];
+    activeFrame?: { data: string; mimeType?: string } | null;
+    systemInstruction: string;
+    toolDeclarations: FunctionDeclaration[];
+    screenW: number;
+    screenH: number;
+    executedTools: string[];
+    onEvent?: (event: JarvisStreamEvent) => void;
+  },
+): Promise<{ reply: string; executedTools: string[] }> {
+  const keys = getOrderedKeysForAttempt(provider);
+  if (keys.length === 0) {
+    throw Object.assign(new Error(`${provider} kaliti topilmadi`), { status: 503 });
+  }
+
+  const models = provider === 'groq' ? GROQ_CHAT_MODELS : OPENROUTER_CHAT_MODELS;
+  const openAiTools = buildOpenAiTools(params.toolDeclarations);
+  const messages: Array<Record<string, unknown>> = [
+    { role: 'system', content: params.systemInstruction },
+    ...params.history
+      .filter((m) => m.text?.trim())
+      .slice(-10)
+      .map((m) => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: m.text.trim(),
+      })),
+  ];
+
+  const supportsVisionDefault = provider === 'openrouter';
+  const userContent: unknown =
+    supportsVisionDefault && params.activeFrame?.data
+      ? [
+          { type: 'text', text: params.message },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `data:${params.activeFrame.mimeType || 'image/jpeg'};base64,${stripBase64DataUrl(params.activeFrame.data)}`,
+            },
+          },
+        ]
+      : params.message;
+  messages.push({ role: 'user', content: userContent });
+
+  const requestCompletion = async (
+    msgs: Array<Record<string, unknown>>,
+    includeTools: boolean,
+  ) => {
+    let lastErr: unknown;
+    for (const apiKey of keys) {
+      if (!sharedKeyPool.getAvailableKeys(provider).includes(apiKey)) continue;
+      for (const model of models) {
+        try {
+          const res = await postOpenAiCompatible(provider, apiKey, '/chat/completions', {
+            model,
+            messages: msgs,
+            ...(includeTools ? { tools: openAiTools, tool_choice: 'auto' } : {}),
+            max_tokens: 512,
+          });
+          const data = (await res.json()) as OpenAiChatResponse;
+          if (!res.ok) {
+            throw Object.assign(
+              new Error(data?.error?.message || `${provider} HTTP ${res.status}`),
+              { status: res.status },
+            );
+          }
+          sharedKeyPool.markHealthy(provider, apiKey);
+          return data;
+        } catch (err) {
+          lastErr = err;
+          const info = classifyUpstreamFailure(err);
+          if (info.shouldRotateKey) {
+            sharedKeyPool.markFailed(provider, apiKey, info.cooldownMs);
+            break;
+          }
+        }
+      }
+    }
+    throw lastErr || Object.assign(new Error(`${provider} javob bermadi`), { status: 503 });
+  };
+
+  let completion = await requestCompletion(messages, true);
+
+  for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
+    const assistantMsg = completion.choices?.[0]?.message;
+    const toolCalls = assistantMsg?.tool_calls;
+    if (!toolCalls || toolCalls.length === 0) {
+      return {
+        reply: extractJarvisReplyText(undefined, assistantMsg?.content || ''),
+        executedTools: params.executedTools,
+      };
+    }
+
+    messages.push({
+      role: 'assistant',
+      content: assistantMsg?.content || '',
+      tool_calls: toolCalls,
+    });
+
+    for (const call of toolCalls) {
+      const toolName = call.function?.name || '';
+      let parsedArgs: Record<string, unknown> = {};
+      try {
+        parsedArgs = call.function?.arguments ? (JSON.parse(call.function.arguments) as Record<string, unknown>) : {};
+      } catch {
+        parsedArgs = {};
+      }
+      params.executedTools.push(toolName);
+      params.onEvent?.({ type: 'tool_start', tool: toolName });
+      try {
+        const execRes = await executeDesktopTool(toolName, parsedArgs, params.screenW, params.screenH);
+        params.onEvent?.({ type: 'tool_done', tool: toolName, ok: execRes.responsePayload.ok });
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify(execRes.responsePayload),
+        });
+      } catch (err) {
+        params.onEvent?.({ type: 'tool_done', tool: toolName, ok: false });
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify({ ok: false, error: (err as Error).message }),
+        });
+      }
+    }
+
+    completion = await requestCompletion(messages, step < MAX_TOOL_STEPS - 1);
+  }
+
+  return {
+    reply: extractJarvisReplyText(undefined, completion.choices?.[0]?.message?.content || ''),
+    executedTools: params.executedTools,
+  };
+}
+
 export async function runJarvisChat(
   message: string,
   history: JarvisChatMessage[],
   onEvent?: (event: JarvisStreamEvent) => void,
 ): Promise<{ reply: string; executedTools: string[] }> {
-  const ai = getGeminiClient();
+  if (!hasAnyAiProviderKey()) {
+    throw new Error(
+      'GEMINI_API_KEY sozlanmagan. Iltimos, Settings > Secrets yoki .env orqali Gemini, Groq yoki OpenRouter API kalitini kiriting.',
+    );
+  }
+
   const target = realWin10Bridge.getExecutionTarget();
   const realStatus = realWin10Bridge.getStatus();
   let activeFrame =
@@ -455,77 +743,110 @@ export async function runJarvisChat(
 
   const systemInstruction = buildJarvisSystemInstruction(screenInfo);
 
-  let response = await generateWithFallback(ai, {
-    contents,
-    systemInstruction,
-    toolDeclarations,
-  });
+  let lastError: unknown;
 
-  for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
-    const calls = response.functionCalls;
-    if (!calls || calls.length === 0) break;
+  if (getOrderedKeysForAttempt('gemini').length > 0) {
+    try {
+      let response = await generateGeminiWithKeyRotation({
+        contents,
+        systemInstruction,
+        toolDeclarations,
+      });
 
-    const modelContent = response.candidates?.[0]?.content;
-    if (modelContent) {
-      contents.push(modelContent);
-    }
+      for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
+        const calls = response.functionCalls;
+        if (!calls || calls.length === 0) break;
 
-    const responseParts: Part[] = [];
-    for (const call of calls) {
-      const toolName = call.name || '';
-      const toolArgs = (call.args || {}) as Record<string, unknown>;
-      executedTools.push(toolName);
-      onEvent?.({ type: 'tool_start', tool: toolName });
-      try {
-        const execRes = await executeDesktopTool(toolName, toolArgs, screenW, screenH);
-        onEvent?.({ type: 'tool_done', tool: toolName, ok: execRes.responsePayload.ok });
-        responseParts.push({
-          functionResponse: {
-            ...(call.id ? { id: call.id } : {}),
-            name: toolName,
-            response: execRes.responsePayload,
-          },
-        });
-        for (const img of execRes.images) {
-          responseParts.push({
-            inlineData: {
-              mimeType: img.mimeType,
-              data: img.data,
-            },
-          });
+        const modelContent = response.candidates?.[0]?.content;
+        if (modelContent) {
+          contents.push(modelContent);
         }
-      } catch (err) {
-        onEvent?.({ type: 'tool_done', tool: toolName, ok: false });
-        responseParts.push({
-          functionResponse: {
-            ...(call.id ? { id: call.id } : {}),
-            name: toolName,
-            response: { ok: false, error: (err as Error).message },
-          },
+
+        const responseParts: Part[] = [];
+        for (const call of calls) {
+          const toolName = call.name || '';
+          const toolArgs = (call.args || {}) as Record<string, unknown>;
+          executedTools.push(toolName);
+          onEvent?.({ type: 'tool_start', tool: toolName });
+          try {
+            const execRes = await executeDesktopTool(toolName, toolArgs, screenW, screenH);
+            onEvent?.({ type: 'tool_done', tool: toolName, ok: execRes.responsePayload.ok });
+            responseParts.push({
+              functionResponse: {
+                ...(call.id ? { id: call.id } : {}),
+                name: toolName,
+                response: execRes.responsePayload,
+              },
+            });
+            for (const img of execRes.images) {
+              responseParts.push({
+                inlineData: {
+                  mimeType: img.mimeType,
+                  data: img.data,
+                },
+              });
+            }
+          } catch (err) {
+            onEvent?.({ type: 'tool_done', tool: toolName, ok: false });
+            responseParts.push({
+              functionResponse: {
+                ...(call.id ? { id: call.id } : {}),
+                name: toolName,
+                response: { ok: false, error: (err as Error).message },
+              },
+            });
+          }
+        }
+
+        contents.push({ role: 'user', parts: responseParts });
+        response = await generateGeminiWithKeyRotation({
+          contents,
+          systemInstruction,
+          toolDeclarations: step === MAX_TOOL_STEPS - 1 ? undefined : toolDeclarations,
         });
       }
-    }
 
-    contents.push({ role: 'user', parts: responseParts });
-    response = await generateWithFallback(ai, {
-      contents,
-      systemInstruction,
-      toolDeclarations: step === MAX_TOOL_STEPS - 1 ? undefined : toolDeclarations,
-    });
+      const reply = extractJarvisReplyText(
+        response.candidates?.[0]?.content?.parts as Array<{ text?: string; thought?: boolean }> | undefined,
+        response.text,
+      );
+
+      return {
+        reply,
+        executedTools,
+      };
+    } catch (err) {
+      lastError = err;
+      const info = classifyUpstreamFailure(err);
+      if (info.status === 400) {
+        throw err;
+      }
+    }
   }
 
-  const reply = extractJarvisReplyText(
-    response.candidates?.[0]?.content?.parts as Array<{ text?: string; thought?: boolean }> | undefined,
-    response.text,
-  );
+  for (const fallbackProvider of ['groq', 'openrouter'] as const) {
+    if (getOrderedKeysForAttempt(fallbackProvider).length === 0) continue;
+    try {
+      return await runOpenAiProviderChat(fallbackProvider, {
+        message,
+        history,
+        activeFrame,
+        systemInstruction,
+        toolDeclarations,
+        screenW,
+        screenH,
+        executedTools,
+        onEvent,
+      });
+    } catch (err) {
+      lastError = err;
+    }
+  }
 
-  return {
-    reply,
-    executedTools,
-  };
+  throw lastError || new Error('Barcha AI API provayderlari band yoki limiti tugagan.');
 }
 
-export function extractJarvisReplyText(
+function extractVisibleModelText(
   parts?: Array<{ text?: string; thought?: boolean }>,
   fallbackText?: string,
 ): string {
@@ -540,14 +861,20 @@ export function extractJarvisReplyText(
       .map((p) => String(p.text).trim())
       .filter(Boolean);
     if (visible.length > 0) {
-      return visible.join('\n').replace(/^,\s+/, '').trim() || 'Buyruq bajarildi.';
+      return visible.join('\n').replace(/^,\s+/, '').trim();
     }
   }
-  const cleanFallback = String(fallbackText || '')
+  return String(fallbackText || '')
     .replace(/^thought(?:\r?\n|\s)+[^\r\n]*(?:\r?\n)?/i, '')
     .replace(/^,\s+/, '')
     .trim();
-  return cleanFallback || 'Buyruq bajarildi.';
+}
+
+export function extractJarvisReplyText(
+  parts?: Array<{ text?: string; thought?: boolean }>,
+  fallbackText?: string,
+): string {
+  return extractVisibleModelText(parts, fallbackText) || 'Buyruq bajarildi.';
 }
 
 export function normalizeAudioMimeType(mimeType?: string): string {
@@ -556,59 +883,213 @@ export function normalizeAudioMimeType(mimeType?: string): string {
   return base;
 }
 
-const NON_UZBEK_SCRIPT_RE = /[\u0600-\u06FF\u0900-\u097F\u0980-\u09FF\u0400-\u04FF\u4E00-\u9FFF]/;
-const NON_UZBEK_LATIN_RE = /[ıİğĞşŞçÇüÜöÖëËäÄ]/;
+async function convertAudioToCleanWav(
+  base64Audio: string,
+  cleanMime: string,
+): Promise<{ base64: string; mimeType: string }> {
+  const rawBase64 = stripBase64DataUrl(base64Audio);
+  if (cleanMime === 'audio/wav') {
+    return { base64: rawBase64, mimeType: 'audio/wav' };
+  }
+  const ext = cleanMime.includes('mp4') ? 'mp4' : cleanMime.includes('ogg') ? 'ogg' : 'webm';
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  const inPath = path.join(os.tmpdir(), `jarvis-stt-${id}.${ext}`);
+  const outPath = path.join(os.tmpdir(), `jarvis-stt-${id}.wav`);
+  try {
+    await fs.writeFile(inPath, Buffer.from(rawBase64, 'base64'));
+    await execFileAsync(
+      'ffmpeg',
+      ['-y', '-i', inPath, '-af', 'highpass=f=80', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', outPath],
+      { timeout: 8000 },
+    );
+    const wavBuf = await fs.readFile(outPath);
+    if (wavBuf.length > 44) {
+      return { base64: wavBuf.toString('base64'), mimeType: 'audio/wav' };
+    }
+  } catch {
+    // Fallback to original browser audio if ffmpeg fails
+  } finally {
+    await fs.unlink(inPath).catch(() => {});
+    await fs.unlink(outPath).catch(() => {});
+  }
+  return { base64: rawBase64, mimeType: cleanMime };
+}
 
-export async function transcribeJarvisAudio(base64Audio: string, mimeType: string): Promise<string> {
-  const ai = getGeminiClient();
-  const cleanMime = normalizeAudioMimeType(mimeType);
-  const audioContents = {
-    parts: [
+const UZBEK_STT_SYSTEM_INSTRUCTION =
+  'You are an Uzbek-only speech-to-text transcriber for the J.A.R.V.I.S. desktop assistant created by shoh_tech. ' +
+  'CRITICAL RULE: The user is speaking Uzbek (O‘zbek tili) using the Uzbek Latin alphabet (a-z, o‘, g‘, sh, ch, ng), occasionally mentioning tech words like Jarvis, shoh_tech, Terminal, Calculator, Chromium, Mousepad, Linux, Windows. ' +
+  'NEVER output Chinese/Japanese/Korean characters, Arabic/Urdu script, Hindi/Devanagari script, Turkish letters (ı/ğ/ş/ç/ö/ü), Albanian (ë), or unrelated English translations. ' +
+  'Return ONLY the exact spoken Uzbek Latin text with no quotes or explanation. ' +
+  'If the audio contains only silence, breathing, clicks, or unintelligible background noise, return an empty string.';
+
+async function transcribeWithGroqKey(
+  apiKey: string,
+  audioBase64: string,
+  mimeType: string,
+): Promise<string> {
+  const buf = Buffer.from(audioBase64, 'base64');
+  const ext = mimeType === 'audio/wav' ? 'wav' : mimeType.includes('mp4') ? 'm4a' : 'webm';
+  const form = new FormData();
+  form.append('file', new Blob([buf], { type: mimeType }), `speech.${ext}`);
+  form.append('model', GROQ_STT_MODEL);
+  form.append('language', 'uz');
+  form.append('temperature', '0');
+  form.append(
+    'prompt',
+    'O‘zbek tilida lotin alifbosida yozing: Salom, Jarvis, shoh_tech, terminalni och, kalkulyatorni ishga tushir, brauzerni och, barcha ilovalarni yop.',
+  );
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal: controller.signal,
+    });
+    const data = (await res.json()) as { text?: string; error?: { message?: string } };
+    if (!res.ok) {
+      throw Object.assign(new Error(data?.error?.message || `Groq STT HTTP ${res.status}`), {
+        status: res.status,
+      });
+    }
+    return cleanUzbekTranscript(data.text || '');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function transcribeWithOpenRouterKey(
+  apiKey: string,
+  wavBase64: string,
+  mimeType: string,
+): Promise<string> {
+  const format = mimeType === 'audio/wav' ? 'wav' : 'mp3';
+  const res = await postOpenAiCompatible('openrouter', apiKey, '/chat/completions', {
+    model: OPENROUTER_STT_MODEL,
+    messages: [
+      { role: 'system', content: UZBEK_STT_SYSTEM_INSTRUCTION },
       {
-        inlineData: {
-          mimeType: cleanMime,
-          data: stripBase64DataUrl(base64Audio),
-        },
-      },
-      {
-        text:
-          'Listen carefully to the audio. The speaker is speaking Uzbek (O‘zbek tili) commands to a computer assistant named J.A.R.V.I.S. (created by shoh_tech). ' +
-          'Common Uzbek phrases include opening/closing apps (terminalni och, kalkulyatorni ishga tushir, brauzerni och, barcha ilovalarni yop), asking questions (seni kim yaratgan, ekranda nima bor), or typing/clicking. ' +
-          'Transcribe the EXACT spoken words in standard Uzbek Latin script (using o‘, g‘, sh, ch — NEVER Turkish ı/ş/ğ/ç/ö/ü, NEVER Albanian ë, NEVER Arabic/Urdu/Hindi/Cyrillic). ' +
-          'Return ONLY the exact transcribed text with no quotes or extra words. ' +
-          'If there is only silence, breathing, or background noise with no clear speech, return an empty string.',
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Transcribe this Uzbek speech accurately in Uzbek Latin script.' },
+          { type: 'input_audio', input_audio: { data: wavBase64, format } },
+        ],
       },
     ],
-  };
+    max_tokens: 256,
+  });
+  const data = (await res.json()) as OpenAiChatResponse;
+  if (!res.ok) {
+    throw Object.assign(new Error(data?.error?.message || `OpenRouter STT HTTP ${res.status}`), {
+      status: res.status,
+    });
+  }
+  return cleanUzbekTranscript(data.choices?.[0]?.message?.content || '');
+}
 
-  const models = [GEMINI_FALLBACK_MODEL, GEMINI_CHAT_MODEL, GEMINI_TRANSCRIBE_MODEL];
-  for (let i = 0; i < models.length; i += 1) {
-    const model = models[i];
-    const isLast = i === models.length - 1;
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: audioContents,
-        ...(model !== GEMINI_TRANSCRIBE_MODEL
-          ? { config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } }
-          : {}),
-      });
-      const raw = (response.text || '').trim().replace(/^["'«»]+|["'«»]+$/g, '').trim();
-      if (!raw || /^\[?(?:silence|no speech|inaudible|jimlik|empty)\]?$/i.test(raw)) {
-        return '';
-      }
-      if (!isLast && (NON_UZBEK_SCRIPT_RE.test(raw) || NON_UZBEK_LATIN_RE.test(raw))) {
-        continue;
-      }
-      return raw;
-    } catch (err) {
-      const formatted = formatGeminiError(err);
-      if (isLast || (formatted.status !== 503 && formatted.status !== 429 && formatted.status < 500)) {
-        throw err;
+export async function transcribeJarvisAudio(base64Audio: string, mimeType: string): Promise<string> {
+  if (!hasAnyAiProviderKey()) {
+    throw new Error(
+      'GEMINI_API_KEY sozlanmagan. Iltimos, Settings > Secrets yoki .env orqali API kalit kiriting.',
+    );
+  }
+
+  const cleanMime = normalizeAudioMimeType(mimeType);
+  const prepared = await convertAudioToCleanWav(base64Audio, cleanMime);
+  let lastError: unknown;
+
+  // 1. Primary: Gemini API across configured models and GEMINI_API_KEY* keys
+  const sttModels = [GEMINI_CHAT_MODEL, GEMINI_FALLBACK_MODEL];
+  const allowCooledFallback = !hasBackupProvidersReady();
+  for (const model of sttModels) {
+    const geminiKeys = sharedKeyPool.getAvailableKeysForModel(
+      'gemini',
+      model,
+      process.env,
+      Date.now(),
+      allowCooledFallback,
+    );
+    for (const apiKey of geminiKeys) {
+      const ai = createGeminiClient(apiKey);
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: prepared.mimeType,
+                  data: prepared.base64,
+                },
+              },
+              {
+                text: 'Transcribe the Uzbek speech in this audio in Uzbek Latin script only. Return empty string if silence or noise.',
+              },
+            ],
+          },
+          config: {
+            systemInstruction: UZBEK_STT_SYSTEM_INSTRUCTION,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          },
+        });
+        sharedKeyPool.markModelHealthy('gemini', model, apiKey);
+        const visibleText = extractVisibleModelText(
+          response.candidates?.[0]?.content?.parts as Array<{ text?: string; thought?: boolean }> | undefined,
+          response.text,
+        );
+        return cleanUzbekTranscript(visibleText);
+      } catch (err) {
+        lastError = err;
+        const info = classifyUpstreamFailure(err);
+        if (info.status === 400) {
+          throw err;
+        }
+        if (info.keyInvalid) {
+          sharedKeyPool.markFailed('gemini', apiKey, info.cooldownMs);
+        } else if (info.shouldRotateKey) {
+          sharedKeyPool.markModelFailed('gemini', model, apiKey, info.cooldownMs);
+        }
       }
     }
   }
 
+  // 2. Failover: Groq Whisper across all configured GROQ_API_KEY* keys
+  const groqKeys = getOrderedKeysForAttempt('groq');
+  for (const apiKey of groqKeys) {
+    try {
+      const text = await transcribeWithGroqKey(apiKey, prepared.base64, prepared.mimeType);
+      sharedKeyPool.markHealthy('groq', apiKey);
+      return text;
+    } catch (err) {
+      lastError = err;
+      const info = classifyUpstreamFailure(err);
+      if (info.shouldRotateKey) {
+        sharedKeyPool.markFailed('groq', apiKey, info.cooldownMs);
+      }
+    }
+  }
+
+  // 3. Failover: OpenRouter multimodal audio across all configured OPENROUTER_API_KEY* keys
+  const openRouterKeys = getOrderedKeysForAttempt('openrouter');
+  for (const apiKey of openRouterKeys) {
+    try {
+      const text = await transcribeWithOpenRouterKey(apiKey, prepared.base64, prepared.mimeType);
+      sharedKeyPool.markHealthy('openrouter', apiKey);
+      return text;
+    } catch (err) {
+      lastError = err;
+      const info = classifyUpstreamFailure(err);
+      if (info.shouldRotateKey) {
+        sharedKeyPool.markFailed('openrouter', apiKey, info.cooldownMs);
+      }
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
   return '';
 }
 
@@ -617,71 +1098,164 @@ let ttsPrimaryCooldownUntil = 0;
 export async function synthesizeJarvisSpeech(
   text: string,
 ): Promise<{ audioBase64: string; mimeType: string }> {
-  const speechText = prepareTextForSpeech(text);
+  const speechText = prepareTextForUzbekTts(text);
   if (!speechText) {
     throw Object.assign(new Error('Ovozga aylantirish uchun matn topilmadi.'), { status: 400 });
   }
+  if (!hasAnyAiProviderKey()) {
+    throw new Error(
+      'GEMINI_API_KEY sozlanmagan. Iltimos, Settings > Secrets yoki .env orqali API kalit kiriting.',
+    );
+  }
 
-  const ai = getGeminiClient();
-  const models =
+  let lastError: unknown;
+
+  // 1. Primary: Gemini TTS across configured models and GEMINI_API_KEY* keys
+  const ttsModels =
     Date.now() < ttsPrimaryCooldownUntil
       ? [GEMINI_TTS_FALLBACK_MODEL, GEMINI_TTS_PRIMARY_MODEL]
       : [GEMINI_TTS_PRIMARY_MODEL, GEMINI_TTS_FALLBACK_MODEL];
+  const allowCooledFallback = !hasBackupProvidersReady();
 
-  let lastError: unknown;
-  for (const model of models) {
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: speechText,
-                speechMetadata: {
-                  style:
-                    'Calm, composed, loyal, subtly witty British-butler AI assistant voice like J.A.R.V.I.S., clear natural Uzbek articulation',
+  for (const model of ttsModels) {
+    const geminiKeys = sharedKeyPool.getAvailableKeysForModel(
+      'gemini',
+      model,
+      process.env,
+      Date.now(),
+      allowCooledFallback,
+    );
+    for (const apiKey of geminiKeys) {
+      const ai = createGeminiClient(apiKey);
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: speechText,
+                  speechMetadata: {
+                    style:
+                      'Calm, composed, loyal, authoritative male J.A.R.V.I.S. assistant speaking pure natural Uzbek (O‘zbek tili) with native Uzbek pronunciation',
+                  },
                 },
+              ],
+            },
+          ],
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: 'Charon' },
               },
-            ],
-          },
-        ],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: 'Charon' },
             },
           },
-        },
-      });
+        });
 
-      const parts = response.candidates?.[0]?.content?.parts || [];
-      const audioPart = parts.find((part) => Boolean(part.inlineData?.data));
-      const audioBase64 = audioPart?.inlineData?.data;
-      if (!audioBase64) {
-        throw new Error('J.A.R.V.I.S. ovoz sintezidan audio ma‘lumot qaytmadi.');
-      }
+        const parts = response.candidates?.[0]?.content?.parts || [];
+        const audioPart = parts.find((part) => Boolean(part.inlineData?.data));
+        const audioBase64 = audioPart?.inlineData?.data;
+        if (!audioBase64) {
+          throw new Error('J.A.R.V.I.S. ovoz sintezidan audio ma‘lumot qaytmadi.');
+        }
 
-      return {
-        audioBase64,
-        mimeType: audioPart?.inlineData?.mimeType || 'audio/wav',
-      };
-    } catch (err) {
-      lastError = err;
-      const formatted = formatGeminiError(err);
-      if (formatted.status === 400 || formatted.status === 403 || formatted.status === 404) {
-        throw err;
-      }
-      if (
-        model === GEMINI_TTS_PRIMARY_MODEL &&
-        (formatted.status === 503 || formatted.status === 429 || formatted.status >= 500)
-      ) {
-        ttsPrimaryCooldownUntil = Date.now() + 60_000;
+        sharedKeyPool.markModelHealthy('gemini', model, apiKey);
+        return {
+          audioBase64,
+          mimeType: audioPart?.inlineData?.mimeType || 'audio/wav',
+        };
+      } catch (err) {
+        lastError = err;
+        const info = classifyUpstreamFailure(err);
+        if (info.status === 400) {
+          throw err;
+        }
+        if (info.keyInvalid) {
+          sharedKeyPool.markFailed('gemini', apiKey, info.cooldownMs);
+        } else if (info.shouldRotateKey) {
+          sharedKeyPool.markModelFailed('gemini', model, apiKey, info.cooldownMs);
+          if (model === GEMINI_TTS_PRIMARY_MODEL && (info.status === 503 || info.status === 429)) {
+            ttsPrimaryCooldownUntil = Date.now() + 30_000;
+          }
+        }
       }
     }
   }
 
-  throw lastError;
+  // 2. Failover: Groq TTS across GROQ_API_KEY* keys
+  const groqKeys = getOrderedKeysForAttempt('groq');
+  for (const apiKey of groqKeys) {
+    try {
+      const res = await postOpenAiCompatible('groq', apiKey, '/audio/speech', {
+        model: GROQ_TTS_MODEL,
+        input: speechText,
+        voice: 'troy',
+        response_format: 'wav',
+      });
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        throw Object.assign(new Error(errBody || `Groq TTS HTTP ${res.status}`), {
+          status: res.status,
+        });
+      }
+      const arr = await res.arrayBuffer();
+      if (arr.byteLength > 44) {
+        sharedKeyPool.markHealthy('groq', apiKey);
+        return {
+          audioBase64: Buffer.from(arr).toString('base64'),
+          mimeType: 'audio/wav',
+        };
+      }
+    } catch (err) {
+      lastError = err;
+      const info = classifyUpstreamFailure(err);
+      if (info.shouldRotateKey) {
+        sharedKeyPool.markFailed('groq', apiKey, info.cooldownMs);
+      }
+    }
+  }
+
+  // 3. Failover: OpenRouter Audio TTS across OPENROUTER_API_KEY* keys
+  const openRouterKeys = getOrderedKeysForAttempt('openrouter');
+  for (const apiKey of openRouterKeys) {
+    try {
+      const res = await postOpenAiCompatible('openrouter', apiKey, '/chat/completions', {
+        model: OPENROUTER_TTS_MODEL,
+        modalities: ['text', 'audio'],
+        audio: { voice: 'onyx', format: 'wav' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Read the user text aloud verbatim in natural Uzbek (O‘zbek tili) with a calm J.A.R.V.I.S. male voice. Do not add extra words.',
+          },
+          { role: 'user', content: speechText },
+        ],
+      });
+      const data = (await res.json()) as OpenAiChatResponse;
+      if (!res.ok) {
+        throw Object.assign(new Error(data?.error?.message || `OpenRouter TTS HTTP ${res.status}`), {
+          status: res.status,
+        });
+      }
+      const audioData = data.choices?.[0]?.message?.audio?.data;
+      if (audioData) {
+        sharedKeyPool.markHealthy('openrouter', apiKey);
+        return {
+          audioBase64: audioData,
+          mimeType: 'audio/wav',
+        };
+      }
+    } catch (err) {
+      lastError = err;
+      const info = classifyUpstreamFailure(err);
+      if (info.shouldRotateKey) {
+        sharedKeyPool.markFailed('openrouter', apiKey, info.cooldownMs);
+      }
+    }
+  }
+
+  throw lastError || new Error('Ovoz sintezi uchun barcha AI API kalitlari band yoki limiti tugagan.');
 }

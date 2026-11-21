@@ -11,13 +11,15 @@ export interface VadState {
   speechStarted: boolean;
   speechStartAt: number | null;
   lastLoudAt: number | null;
+  lastSampleAt: number;
+  voicedMs: number;
   noiseFloor: number;
   sampleCount: number;
 }
 
 export const DEFAULT_VAD_CONFIG: VadConfig = {
-  speechThreshold: 0.014,
-  minSpeechMs: 140,
+  speechThreshold: 0.016,
+  minSpeechMs: 180,
   silenceStopMs: 1350,
   maxUtteranceMs: 16000,
   maxIdleMs: 14000,
@@ -39,6 +41,8 @@ export function createInitialVadState(nowMs = Date.now()): VadState {
     speechStarted: false,
     speechStartAt: null,
     lastLoudAt: null,
+    lastSampleAt: nowMs,
+    voicedMs: 0,
     noiseFloor: 0.005,
     sampleCount: 0,
   };
@@ -53,9 +57,11 @@ export function stepVadState(
   const adaptiveFloor = state.sampleCount < 3 ? 0.018 : Math.min(0.055, state.noiseFloor * 2.3);
   const threshold = Math.max(config.speechThreshold, adaptiveFloor);
   const isLoud = rms >= threshold;
+  const dt = Math.max(0, Math.min(300, nowMs - state.lastSampleAt));
   let speechStartAt = state.speechStartAt;
   let lastLoudAt = state.lastLoudAt;
   let speechStarted = state.speechStarted;
+  let voicedMs = state.voicedMs;
   let noiseFloor = state.noiseFloor;
 
   if (isLoud) {
@@ -63,6 +69,7 @@ export function stepVadState(
       speechStartAt = nowMs;
     }
     lastLoudAt = nowMs;
+    voicedMs += Math.max(dt, 80);
     if (!speechStarted && nowMs - speechStartAt >= config.minSpeechMs) {
       speechStarted = true;
     }
@@ -73,6 +80,7 @@ export function stepVadState(
     }
     if (!speechStarted && speechStartAt !== null && lastLoudAt !== null && nowMs - lastLoudAt > 350) {
       speechStartAt = null;
+      voicedMs = 0;
     }
   }
 
@@ -81,6 +89,8 @@ export function stepVadState(
     speechStarted,
     speechStartAt,
     lastLoudAt,
+    lastSampleAt: nowMs,
+    voicedMs,
     noiseFloor,
     sampleCount: state.sampleCount + 1,
   };

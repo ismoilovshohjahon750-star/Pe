@@ -53,10 +53,11 @@ test('stepVadState adapts noise floor and detects soft speech in quiet environme
   for (let i = 1; i <= 5; i += 1) {
     state = stepVadState(state, 0.003, i * 100).next;
   }
-  const s1 = stepVadState(state, 0.016, 600);
+  const s1 = stepVadState(state, 0.018, 600);
   assert.equal(s1.next.speechStarted, false);
-  const s2 = stepVadState(s1.next, 0.016, 800);
+  const s2 = stepVadState(s1.next, 0.018, 800);
   assert.equal(s2.next.speechStarted, true);
+  assert.ok(s2.next.voicedMs >= 200);
 });
 
 test('prepareTextForSpeech strips markdown formatting cleanly', () => {
