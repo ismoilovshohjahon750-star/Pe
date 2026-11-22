@@ -44,7 +44,7 @@ export function PcConnectModal({
   const pipCommand = 'pip install mss pillow pyautogui websockets';
   const pyRunCommand = `cd $HOME; python -c "import urllib.request,runpy; urllib.request.urlretrieve('${origin}/api/real-pc-agent.py','real-pc-agent.py'); runpy.run_path('real-pc-agent.py',run_name='__main__')"`;
   const termuxCommand = `pkg update -y && pkg install -y python && pip install -q websockets && curl -sL "${origin}/api/android-termux-agent.py" -o $HOME/android-termux-agent.py && python $HOME/android-termux-agent.py`;
-  const termuxAdbCommand = 'pkg install -y android-tools termux-api && adb connect 127.0.0.1:5555';
+  const termuxAdbCommand = 'pkg install -y android-tools termux-api && adb connect <TELEFON_IP>:<PORT>';
 
   const copyText = (key: string, text: string) => {
     void copyTextCrossBrowser(text).then((ok) => {
@@ -231,9 +231,9 @@ export function PcConnectModal({
                 </div>
                 <p className="text-white/70 leading-relaxed">
                   Agar telefoningiz ekranini jonli ko‘rish va ekranga bosib boshqarishni istasangiz:
-                  Sozlamalar → Dasturchi parametrlari → <strong>Simsiz nosozliklarni tuzatish (Wireless debugging)</strong> ni yoqing
-                  va Termuxda <span className="font-mono-tabular text-cyan-200">adb pair</span> / <span className="font-mono-tabular text-cyan-200">adb connect</span> bajaring.
-                  Root qilingan telefonlarda esa <span className="font-mono-tabular">su</span> avtomatik aniqlanadi.
+                  Sozlamalar → Dasturchi parametrlari → <strong>Simsiz nosozliklarni tuzatish (Wireless debugging)</strong> ni yoqing,
+                  u yerda ko‘rsatilgan IP-manzil va Portni yozing (masalan: <span className="font-mono-tabular text-cyan-200">adb connect 192.168.1.50:43821</span>).
+                  Root qilingan telefonlarda esa <span className="font-mono-tabular">su</span> avtomatik aniqlanadi va ADB shart emas.
                 </p>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-[11px] text-white/70">
