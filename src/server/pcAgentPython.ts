@@ -26,37 +26,68 @@ from pathlib import Path
 
 import mss
 import pyautogui
-from PIL import Image
+from PIL import Image, ImageDraw
 import websockets
 
 WS_URI = ${JSON.stringify(finalWsUrl)}
 pyautogui.FAILSAFE = False
 
 
+def render_locked_frame() -> tuple[int, int, bytes]:
+    w, h = 960, 540
+    img = Image.new("RGB", (w, h), (7, 11, 20))
+    draw = ImageDraw.Draw(img)
+    draw.text((60, 200), "PC QULFLANGAN (Win+L)", fill=(56, 189, 248))
+    draw.text((60, 240), "Fonda aloqa faol: run_powershell, run_bash va file_* buyruqlari ishlayapti.", fill=(203, 213, 225))
+    draw.text((60, 272), "Jonli ekran va sichqoncha uchun kompyuter qulfini oching.", fill=(148, 163, 184))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=55)
+    return w, h, buf.getvalue()
+
+
 def capture_frame_payload() -> dict:
-    with mss.mss() as sct:
-        monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-        raw = sct.grab(monitor)
-        img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=55)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        cx, cy = pyautogui.position()
+    try:
+        with mss.mss() as sct:
+            monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+            raw = sct.grab(monitor)
+            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=55)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            try:
+                cx, cy = pyautogui.position()
+            except Exception:
+                cx, cy = 0, 0
+            return {
+                "type": "agent:frame",
+                "mimeType": "image/jpeg",
+                "width": raw.width,
+                "height": raw.height,
+                "data": b64,
+                "cursorX": int(cx),
+                "cursorY": int(cy),
+                "timestamp": int(time.time() * 1000),
+            }
+    except Exception:
+        w, h, jpg = render_locked_frame()
         return {
             "type": "agent:frame",
             "mimeType": "image/jpeg",
-            "width": raw.width,
-            "height": raw.height,
-            "data": b64,
-            "cursorX": int(cx),
-            "cursorY": int(cy),
+            "width": w,
+            "height": h,
+            "data": base64.b64encode(jpg).decode("ascii"),
+            "cursorX": 0,
+            "cursorY": 0,
             "timestamp": int(time.time() * 1000),
         }
 
 
 def run_tool(tool: str, args: dict):
     if tool == "desktop_screenshot":
-        w, h = pyautogui.size()
+        try:
+            w, h = pyautogui.size()
+        except Exception:
+            w, h = 960, 540
         return {"width": w, "height": h, "note": "Captured live real PC frame"}
 
     if tool == "desktop_move":
@@ -195,10 +226,13 @@ def run_tool(tool: str, args: dict):
     raise ValueError(f"Unsupported tool: {tool}")
 
 
-async def main():
+async def connect_once():
     print(f"Connecting real PC to {WS_URI} ...")
     async with websockets.connect(WS_URI, max_size=16 * 1024 * 1024, ping_interval=15) as ws:
-        w, h = pyautogui.size()
+        try:
+            w, h = pyautogui.size()
+        except Exception:
+            w, h = 1280, 720
         hello = {
             "type": "agent:hello",
             "hostname": socket.gethostname(),
@@ -208,7 +242,7 @@ async def main():
             "screenHeight": int(h),
         }
         await ws.send(json.dumps(hello))
-        print("Connected! Streaming live screen & listening for Claude MCP commands...")
+        print("Connected! Streaming live screen & listening for MCP commands...")
 
         async def send_frames():
             while True:
@@ -238,6 +272,17 @@ async def main():
                         }))
 
         await asyncio.gather(send_frames(), recv_commands())
+
+
+async def main():
+    while True:
+        try:
+            await connect_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"Connection interrupted ({exc}), reconnecting in 3s...")
+            await asyncio.sleep(3)
 
 
 if __name__ == "__main__":

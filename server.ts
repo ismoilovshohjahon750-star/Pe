@@ -18,6 +18,11 @@ import {
 import { realLinuxDesktop } from './src/server/realLinuxDesktop.ts';
 import { realWin10Bridge } from './src/server/realWin10Bridge.ts';
 import { renderDesktopPngBase64 } from './src/server/screenshot.ts';
+import { buildAndroidTermuxAgent } from './src/server/androidTermuxAgent.ts';
+import {
+  buildCSharpPcAgentSource,
+  buildExeBuilderBatchScript,
+} from './src/server/pcAgentExeBuilder.ts';
 import { buildPythonPcAgent } from './src/server/pcAgentPython.ts';
 import { buildWindows10AgentPs1 } from './src/server/win10AgentScript.ts';
 import {
@@ -36,12 +41,16 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '16mb' }));
 
-  // CORS headers for remote MCP clients (Claude Desktop / mcp-remote / Claude.ai)
+  // CORS & cache headers for MCP + cross-browser REST compatibility
   app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
     res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    if (req.path.startsWith('/api/')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+    }
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
@@ -98,8 +107,15 @@ async function startServer() {
     res.json({ target: updated });
   });
 
+  app.get('/api/real-win10/frame', (_req, res) => {
+    res.json({
+      target: realWin10Bridge.getExecutionTarget(),
+      status: realWin10Bridge.getStatus(),
+      frame: realWin10Bridge.getLatestFrame(),
+    });
+  });
+
   app.get('/api/linux/status', (_req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
     res.json({
       status: realLinuxDesktop.getStatus(),
       frame: realLinuxDesktop.getLatestFrame(),
@@ -107,7 +123,6 @@ async function startServer() {
   });
 
   app.get('/api/linux/frame', (_req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
     res.json({
       status: realLinuxDesktop.getStatus(),
       frame: realLinuxDesktop.getLatestFrame(),
@@ -117,6 +132,74 @@ async function startServer() {
   app.post('/api/linux/restart', async (_req, res) => {
     const status = await realLinuxDesktop.restart();
     res.json({ status });
+  });
+
+  app.post('/api/desktop/input', async (req, res) => {
+    try {
+      const msg = (req.body || {}) as { type?: string; [k: string]: unknown };
+      switch (msg.type) {
+        case 'user:linux_click':
+          await realLinuxDesktop.click(
+            Number(msg.x ?? 0),
+            Number(msg.y ?? 0),
+            msg.button === 'right' || msg.button === 'double' ? msg.button : 'left',
+          );
+          break;
+        case 'user:linux_scroll':
+          await realLinuxDesktop.scroll(
+            Number(msg.x ?? 640),
+            Number(msg.y ?? 360),
+            Number(msg.deltaY ?? 0),
+          );
+          break;
+        case 'user:linux_type':
+          await realLinuxDesktop.typeText(String(msg.text ?? ''), Boolean(msg.enter));
+          break;
+        case 'user:linux_key':
+          await realLinuxDesktop.pressKey(String(msg.key ?? 'Return'));
+          break;
+        case 'user:real_click':
+          if (realWin10Bridge.getStatus().connected) {
+            await realWin10Bridge.executeOnAgent('desktop_click', {
+              x: Number(msg.x ?? 0),
+              y: Number(msg.y ?? 0),
+              button: msg.button === 'right' || msg.button === 'double' ? msg.button : 'left',
+            });
+          }
+          break;
+        case 'user:real_scroll':
+          if (realWin10Bridge.getStatus().connected) {
+            await realWin10Bridge.executeOnAgent('desktop_scroll', {
+              x: Number(msg.x ?? 640),
+              y: Number(msg.y ?? 360),
+              direction: Number(msg.deltaY ?? 0) > 0 ? 'down' : 'up',
+              clicks: 3,
+            });
+          }
+          break;
+        case 'user:real_type':
+          if (realWin10Bridge.getStatus().connected) {
+            await realWin10Bridge.executeOnAgent('desktop_type', {
+              text: String(msg.text ?? ''),
+              enter: Boolean(msg.enter),
+            });
+          }
+          break;
+        case 'user:real_key':
+          if (realWin10Bridge.getStatus().connected) {
+            await realWin10Bridge.executeOnAgent('desktop_key', {
+              key: String(msg.key ?? 'Enter'),
+            });
+          }
+          break;
+        default:
+          res.status(400).json({ ok: false, error: 'Unsupported input action' });
+          return;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
+    }
   });
 
   app.get('/api/real-win10-agent.ps1', (req, res) => {
@@ -147,6 +230,49 @@ async function startServer() {
     res.setHeader('Content-Type', 'text/x-python; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="real-pc-agent.py"');
     res.send(script);
+  });
+
+  app.get('/api/android-termux-agent.py', (req, res) => {
+    const fwdProto = String(req.headers['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    const proto = fwdProto === 'https' || req.protocol === 'https' ? 'wss' : 'ws';
+    const host = req.headers.host || `localhost:${PORT}`;
+    const state = desktopStore.getState();
+    const token = state.authEnabled ? desktopStore.getAuthToken() : null;
+    const script = buildAndroidTermuxAgent(`${proto}://${host}/agent-ws`, token);
+    res.setHeader('Content-Type', 'text/x-python; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="android-termux-agent.py"');
+    res.send(script);
+  });
+
+  app.get('/api/real-pc-agent.cs', (req, res) => {
+    const fwdProto = String(req.headers['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    const proto = fwdProto === 'https' || req.protocol === 'https' ? 'wss' : 'ws';
+    const host = req.headers.host || `localhost:${PORT}`;
+    const state = desktopStore.getState();
+    const token = state.authEnabled ? desktopStore.getAuthToken() : null;
+    const source = buildCSharpPcAgentSource(`${proto}://${host}/agent-ws`, token);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="JarvisPcAgent.cs"');
+    res.send(source);
+  });
+
+  app.get('/api/real-pc-agent-builder.bat', (req, res) => {
+    const fwdProto = String(req.headers['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    const httpProto = fwdProto === 'https' || req.protocol === 'https' ? 'https' : 'http';
+    const host = req.headers.host || `localhost:${PORT}`;
+    const bat = buildExeBuilderBatchScript(`${httpProto}://${host}`);
+    res.setHeader('Content-Type', 'application/x-msdos-program; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="JarvisPcAgent-Setup.bat"');
+    res.send(bat);
   });
 
   app.post('/api/mcp-auth', (req, res) => {

@@ -4,6 +4,14 @@ import {
   type LinuxDesktopStatus,
   type RealAgentFrame,
 } from '../desktop/bridge.ts';
+import {
+  isTouchCapableEnvironment,
+  resolveKeyboardLockedPortrait,
+} from '../utils/remoteKeyboard.ts';
+import {
+  focusMobileKeyboardInput,
+  RemoteScreenKeyboardBridge,
+} from './RemoteScreenKeyboardBridge.tsx';
 
 interface RealLinuxViewProps {
   status: LinuxDesktopStatus;
@@ -45,6 +53,9 @@ export function RealLinuxView({
 }: RealLinuxViewProps) {
   const lastWheelAt = useRef(0);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const mobileInputRef = useRef<HTMLInputElement | null>(null);
+  const [keyboardFocused, setKeyboardFocused] = useState(false);
+  const prevPortraitRef = useRef(false);
   const [boxSize, setBoxSize] = useState({ width: 1280, height: 720 });
 
   useEffect(() => {
@@ -52,21 +63,42 @@ export function RealLinuxView({
     if (!el) return;
     const update = () => {
       setBoxSize({
-        width: el.clientWidth || 1280,
-        height: el.clientHeight || 720,
+        width: el.clientWidth || window.innerWidth || 1280,
+        height: el.clientHeight || window.innerHeight || 720,
       });
     };
     update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(update);
+      ro.observe(el);
+    }
+    window.addEventListener('resize', update);
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    vv?.addEventListener('resize', update);
+
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', update);
+      vv?.removeEventListener('resize', update);
+    };
   }, []);
 
   const screenW = frame?.width || status.screenWidth || 1280;
   const screenH = frame?.height || status.screenHeight || 720;
 
-  // Keep Linux screen horizontal (landscape) unless stacked vertically with J.A.R.V.I.S.
-  const isPortrait = allowRotate && boxSize.height > boxSize.width && boxSize.width > 0;
+  // Keep Linux screen horizontal (landscape) unless stacked vertically with J.A.R.V.I.S.,
+  // and freeze rotation while the mobile virtual keyboard shrinks viewport height.
+  const isPortrait = resolveKeyboardLockedPortrait(
+    allowRotate,
+    boxSize.width,
+    boxSize.height,
+    keyboardFocused,
+    prevPortraitRef.current,
+  );
+  prevPortraitRef.current = isPortrait;
+
   const availW = isPortrait ? boxSize.height : boxSize.width;
   const availH = isPortrait ? boxSize.width : boxSize.height;
   const scale = Math.max(0.1, Math.min(availW / screenW, availH / screenH));
@@ -79,6 +111,7 @@ export function RealLinuxView({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target === mobileInputRef.current) return;
     if (e.metaKey) return;
     if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) return;
 
@@ -113,43 +146,63 @@ export function RealLinuxView({
       tabIndex={0}
       onKeyDown={handleKeyDown}
       aria-label="Linux Desktop Screen"
-      className="flex-1 min-h-0 w-full flex items-center justify-center bg-[#03060C] overflow-hidden focus:outline-none"
+      className="relative flex-1 min-h-0 w-full flex items-center justify-center bg-[#03060C] overflow-hidden focus:outline-none"
     >
       {frame?.data ? (
-        <img
-          src={`data:${frame.mimeType};base64,${frame.data}`}
-          alt="Debian 12 Linux X11 desktop live stream"
-          draggable={false}
-          style={{
-            width: `${fitW}px`,
-            height: `${fitH}px`,
-            maxWidth: 'none',
-            maxHeight: 'none',
-            transform: isPortrait ? 'rotate(90deg)' : undefined,
-          }}
-          onClick={(e) => {
-            containerRef.current?.focus();
-            const { x, y } = mapCoords(e);
-            onClickAt(x, y, 'left');
-          }}
-          onDoubleClick={(e) => {
-            const { x, y } = mapCoords(e);
-            onClickAt(x, y, 'double');
-          }}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            const { x, y } = mapCoords(e);
-            onClickAt(x, y, 'right');
-          }}
-          onWheel={(e) => {
-            const now = Date.now();
-            if (now - lastWheelAt.current < 80) return;
-            lastWheelAt.current = now;
-            const { x, y } = mapCoords(e);
-            onScrollAt(x, y, e.deltaY);
-          }}
-          className="shrink-0 select-none cursor-default"
-        />
+        <>
+          <img
+            src={`data:${frame.mimeType};base64,${frame.data}`}
+            alt="Debian 12 Linux X11 desktop live stream"
+            draggable={false}
+            style={{
+              width: `${fitW}px`,
+              height: `${fitH}px`,
+              maxWidth: 'none',
+              maxHeight: 'none',
+              touchAction: 'manipulation',
+              transform: isPortrait ? 'rotate(90deg)' : undefined,
+            }}
+            onClick={(e) => {
+              const { x, y } = mapCoords(e);
+              onClickAt(x, y, 'left');
+              if (isTouchCapableEnvironment()) {
+                focusMobileKeyboardInput(mobileInputRef.current);
+              } else {
+                containerRef.current?.focus();
+              }
+            }}
+            onDoubleClick={(e) => {
+              const { x, y } = mapCoords(e);
+              onClickAt(x, y, 'double');
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              const { x, y } = mapCoords(e);
+              onClickAt(x, y, 'right');
+            }}
+            onWheel={(e) => {
+              const now = Date.now();
+              if (now - lastWheelAt.current < 80) return;
+              lastWheelAt.current = now;
+              const { x, y } = mapCoords(e);
+              onScrollAt(x, y, e.deltaY);
+            }}
+            className="shrink-0 select-none cursor-default"
+          />
+
+          <RemoteScreenKeyboardBridge
+            inputRef={mobileInputRef}
+            keyboardFocused={keyboardFocused}
+            onFocusChange={setKeyboardFocused}
+            specialKeyMap={SPECIAL_KEY_MAP}
+            enterKey="Return"
+            backspaceKey="BackSpace"
+            ctrlKeyCase="lower"
+            altF4Key="alt+F4"
+            onTypeText={onTypeText}
+            onPressKey={onPressKey}
+          />
+        </>
       ) : (
         <div className="text-center space-y-2.5 p-6 max-w-md">
           <div className="text-sm font-medium text-slate-200">

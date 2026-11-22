@@ -32,3 +32,25 @@
 .win10-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(100, 116, 139, 0.7);
 }
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background-color: #03060C;
+  color: #f1f5f9;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.touch-scroll-x {
+  -webkit-overflow-scrolling: touch;
+}

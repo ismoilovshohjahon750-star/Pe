@@ -45,6 +45,23 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
+function decodeAudioDataCompat(ctx: AudioContext, buf: ArrayBuffer): Promise<AudioBuffer> {
+  return new Promise((resolve, reject) => {
+    try {
+      const maybePromise = ctx.decodeAudioData(
+        buf,
+        (decoded) => resolve(decoded),
+        (err) => reject(err || new Error('Audio decode failed')),
+      );
+      if (maybePromise && typeof (maybePromise as Promise<AudioBuffer>).then === 'function') {
+        (maybePromise as Promise<AudioBuffer>).then(resolve, reject);
+      }
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps) {
   const [messages, setMessages] = useState<JarvisMessage[]>([]);
   const [input, setInput] = useState('');
@@ -203,30 +220,38 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
       setSending(true);
       setLiveTools([]);
 
-      const controller = new AbortController();
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
       if (expectedToken !== undefined) {
         fetchAbortRef.current = controller;
       }
+
+      const supportsSseStream =
+        typeof ReadableStream !== 'undefined' && typeof TextDecoder !== 'undefined';
 
       try {
         const res = await fetch('/api/jarvis/chat', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Accept: 'text/event-stream, application/json',
+            Accept: supportsSseStream ? 'text/event-stream, application/json' : 'application/json',
           },
           body: JSON.stringify({
             message: trimmed,
             history: priorHistory,
-            stream: true,
+            stream: supportsSseStream,
           }),
-          signal: controller.signal,
+          ...(controller ? { signal: controller.signal } : {}),
         });
 
         let finalReply: string | null = null;
         const contentType = res.headers.get('content-type') || '';
 
-        if (contentType.includes('text/event-stream') && res.body) {
+        if (
+          supportsSseStream &&
+          contentType.includes('text/event-stream') &&
+          res.body &&
+          typeof res.body.getReader === 'function'
+        ) {
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
@@ -382,7 +407,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
           if (ctx.state === 'suspended') {
             await ctx.resume();
           }
-          const decoded = await ctx.decodeAudioData(base64ToArrayBuffer(audioBase64));
+          const decoded = await decodeAudioDataCompat(ctx, base64ToArrayBuffer(audioBase64));
           if (sessionTokenRef.current !== token || !liveModeRef.current || !openRef.current) return;
           await new Promise<void>((resolve) => {
             const source = ctx.createBufferSource();
@@ -443,7 +468,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
       if (sessionTokenRef.current !== token || !liveModeRef.current || !openRef.current) return;
 
       setVoicePhase('speaking');
-      const controller = new AbortController();
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
       fetchAbortRef.current = controller;
 
       try {
@@ -451,7 +476,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: cleanedSpeech }),
-          signal: controller.signal,
+          ...(controller ? { signal: controller.signal } : {}),
         });
         const data = (await res.json()) as {
           audioBase64?: string;
@@ -486,13 +511,13 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
   const startListeningTurn = useCallback(
     async (token: number) => {
       if (!liveModeRef.current || !openRef.current || sessionTokenRef.current !== token) return;
-      if (!navigator.mediaDevices?.getUserMedia) {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
         setMessages((prev) => [
           ...prev,
           {
             id: `e-${Date.now()}`,
             role: 'assistant',
-            text: 'Mikrofon ushbu brauzerda qo‘llab-quvvatlanmaydi.',
+            text: 'Ovozli yozuv (Mikrofon / MediaRecorder) ushbu brauzerda qo‘llab-quvvatlanmaydi — matn orqali yozishingiz mumkin.',
             isError: true,
           },
         ]);
@@ -629,7 +654,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
 
           void (async () => {
             setVoicePhase('transcribing');
-            const controller = new AbortController();
+            const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
             fetchAbortRef.current = controller;
 
             try {
@@ -645,7 +670,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ audioBase64: base64, mimeType: finalMimeType }),
-                signal: controller.signal,
+                ...(controller ? { signal: controller.signal } : {}),
               });
               const data = (await res.json()) as { text?: string; error?: string };
               if (fetchAbortRef.current === controller) {

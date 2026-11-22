@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Check, Copy, Plug, Shield, Terminal, X } from 'lucide-react';
+import { copyTextCrossBrowser } from '../utils/clipboard.ts';
 import {
   LIQUID_CARD,
   LIQUID_ICON_BTN,
@@ -65,9 +66,12 @@ export function McpConnectModal({ open, onClose }: McpConnectModalProps) {
   );
 
   const copyText = (key: string, value: string) => {
-    void navigator.clipboard?.writeText(value);
-    setCopiedKey(key);
-    setTimeout(() => setCopiedKey(null), 1800);
+    void copyTextCrossBrowser(value).then((ok) => {
+      if (ok) {
+        setCopiedKey(key);
+        setTimeout(() => setCopiedKey(null), 1800);
+      }
+    });
   };
 
   const toggleAuth = async () => {

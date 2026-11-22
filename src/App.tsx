@@ -51,6 +51,21 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  const syncRealAgentFrame = useCallback(() => {
+    fetch('/api/real-win10/frame', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((data: { status?: RealAgentStatus; frame?: RealAgentFrame | null; target?: ExecutionTarget }) => {
+        if (data.status) setRealAgentStatus(data.status);
+        if (data.frame) {
+          setRealAgentFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
+        }
+        if (data.target === 'real-win10' && data.status?.connected) {
+          setExecutionTarget('real-win10');
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     let active = true;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -79,64 +94,70 @@ export default function App() {
       .catch(() => {});
 
     const connect = () => {
-      if (!active) return;
+      if (!active || typeof WebSocket === 'undefined') return;
       const existing = wsRef.current;
       if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
         return;
       }
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
-      wsRef.current = socket;
+      try {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
+        wsRef.current = socket;
 
-      socket.onopen = () => {
-        if (!active) return;
-        attempt = 0;
-        syncLinuxFrame();
-      };
+        socket.onopen = () => {
+          if (!active) return;
+          attempt = 0;
+          syncLinuxFrame();
+        };
 
-      socket.onmessage = (evt) => {
-        if (!active) return;
-        try {
-          const msg = JSON.parse(String(evt.data)) as {
-            type: string;
-            status?: LinuxDesktopStatus | RealAgentStatus;
-            frame?: RealAgentFrame;
-            target?: ExecutionTarget;
-          };
-          if (msg.type === 'linux_status' && msg.status) {
-            setLinuxStatus(msg.status as LinuxDesktopStatus);
-          } else if (msg.type === 'linux_frame' && msg.frame) {
-            lastWsFrameAtRef.current = Date.now();
-            setLinuxFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
-          } else if (msg.type === 'real_agent_status' && msg.status) {
-            setRealAgentStatus(msg.status as RealAgentStatus);
-          } else if (msg.type === 'real_agent_frame' && msg.frame) {
-            setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
-          } else if (msg.type === 'execution_target' && msg.target) {
-            setExecutionTarget(msg.target);
+        socket.onmessage = (evt) => {
+          if (!active) return;
+          try {
+            const msg = JSON.parse(String(evt.data)) as {
+              type: string;
+              status?: LinuxDesktopStatus | RealAgentStatus;
+              frame?: RealAgentFrame;
+              target?: ExecutionTarget;
+            };
+            if (msg.type === 'linux_status' && msg.status) {
+              setLinuxStatus(msg.status as LinuxDesktopStatus);
+            } else if (msg.type === 'linux_frame' && msg.frame) {
+              lastWsFrameAtRef.current = Date.now();
+              setLinuxFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
+            } else if (msg.type === 'real_agent_status' && msg.status) {
+              setRealAgentStatus(msg.status as RealAgentStatus);
+            } else if (msg.type === 'real_agent_frame' && msg.frame) {
+              lastWsFrameAtRef.current = Date.now();
+              setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
+            } else if (msg.type === 'execution_target' && msg.target) {
+              setExecutionTarget(msg.target);
+            }
+          } catch {
+            // ignore malformed messages
           }
-        } catch {
-          // ignore malformed messages
-        }
-      };
+        };
 
-      socket.onclose = () => {
-        if (!active) return;
-        if (wsRef.current === socket) wsRef.current = null;
-        const waitMs = Math.min(5000, 600 * Math.pow(1.5, attempt));
-        attempt += 1;
-        reconnectTimer = setTimeout(connect, waitMs);
-      };
+        socket.onclose = () => {
+          if (!active) return;
+          if (wsRef.current === socket) wsRef.current = null;
+          const waitMs = Math.min(5000, 600 * Math.pow(1.5, attempt));
+          attempt += 1;
+          reconnectTimer = setTimeout(connect, waitMs);
+        };
 
-      socket.onerror = () => {
-        socket.close();
-      };
+        socket.onerror = () => {
+          socket.close();
+        };
+      } catch {
+        wsRef.current = null;
+      }
     };
 
     const handleWakeup = () => {
       if (!active) return;
       if (document.visibilityState === 'visible') {
         syncLinuxFrame();
+        syncRealAgentFrame();
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
           if (reconnectTimer) clearTimeout(reconnectTimer);
           attempt = 0;
@@ -153,11 +174,12 @@ export default function App() {
       if (!active || document.visibilityState !== 'visible') return;
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         syncLinuxFrame();
+        syncRealAgentFrame();
         connect();
       } else if (Date.now() - lastWsFrameAtRef.current > 5500) {
         syncLinuxFrame();
       }
-    }, 4000);
+    }, 1500);
 
     return () => {
       active = false;
@@ -170,12 +192,21 @@ export default function App() {
       shareStreamRef.current?.getTracks().forEach((t) => t.stop());
       wsRef.current?.close();
     };
-  }, [syncLinuxFrame]);
+  }, [syncLinuxFrame, syncRealAgentFrame]);
 
   const sendWs = useCallback((payload: Record<string, unknown>) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload));
+      return;
+    }
+    const actionType = String(payload.type || '');
+    if (actionType.startsWith('user:linux_') || actionType.startsWith('user:real_')) {
+      void fetch('/api/desktop/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).catch(() => {});
     }
   }, []);
 
@@ -276,32 +307,41 @@ export default function App() {
   const showingRealPc = executionTarget === 'real-win10' && realAgentStatus.connected;
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-[#03060C] text-slate-100 overflow-hidden">
-      <header className="h-12 px-2.5 sm:px-4 bg-[#070B14]/90 backdrop-blur-md border-b border-white/10 flex items-center justify-end gap-1.5 sm:gap-2.5 shrink-0">
-        <button
-          type="button"
-          onClick={() => setJarvisOpen((prev) => !prev)}
-          className={LIQUID_PILL_BTN}
-        >
-          <Cpu className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
-          <span className="relative z-10">J.A.R.V.I.S.</span>
-        </button>
-        <button type="button" onClick={() => setPcModalOpen(true)} className={LIQUID_PILL_BTN}>
-          {realAgentStatus.connected ? (
-            <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10" aria-hidden="true" />
-          ) : (
-            <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
-          )}
-          <span className="relative z-10">Haqiqiy PC Ulash</span>
-        </button>
-        <button type="button" onClick={() => setMcpModalOpen(true)} className={LIQUID_PILL_BTN}>
-          <Plug className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
-          <span className="relative z-10">MCP Ulash</span>
-        </button>
-        <button type="button" onClick={() => setSettingsModalOpen(true)} className={LIQUID_PILL_BTN}>
-          <Settings className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
-          <span className="relative z-10">Sozlamalar</span>
-        </button>
+    <div className="h-screen h-[100dvh] w-screen w-full flex flex-col bg-[#03060C] text-slate-100 overflow-hidden">
+      <header
+        onWheel={(e) => {
+          if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            e.currentTarget.scrollLeft += e.deltaY;
+          }
+        }}
+        className="h-12 w-full bg-[#070B14]/95 supports-[backdrop-filter]:bg-[#070B14]/90 supports-[backdrop-filter]:backdrop-blur-md border-b border-white/10 overflow-x-auto overflow-y-hidden no-scrollbar touch-pan-x touch-scroll-x shrink-0"
+      >
+        <div className="h-full min-w-full w-max px-2.5 sm:px-4 flex items-center justify-start sm:justify-end gap-1.5 sm:gap-2.5">
+          <button
+            type="button"
+            onClick={() => setJarvisOpen((prev) => !prev)}
+            className={LIQUID_PILL_BTN}
+          >
+            <Cpu className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            <span className="relative z-10">J.A.R.V.I.S.</span>
+          </button>
+          <button type="button" onClick={() => setPcModalOpen(true)} className={LIQUID_PILL_BTN}>
+            {realAgentStatus.connected ? (
+              <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10" aria-hidden="true" />
+            ) : (
+              <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            )}
+            <span className="relative z-10">PC / Telefon Ulash</span>
+          </button>
+          <button type="button" onClick={() => setMcpModalOpen(true)} className={LIQUID_PILL_BTN}>
+            <Plug className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            <span className="relative z-10">MCP Ulash</span>
+          </button>
+          <button type="button" onClick={() => setSettingsModalOpen(true)} className={LIQUID_PILL_BTN}>
+            <Settings className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            <span className="relative z-10">Sozlamalar</span>
+          </button>
+        </div>
       </header>
 
       <main className="flex-1 min-h-0 flex flex-col overflow-hidden">

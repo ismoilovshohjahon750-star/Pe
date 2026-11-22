@@ -736,9 +736,14 @@ export async function runJarvisChat(
     target === 'real-win10' && realStatus.connected ? realStatus.screenWidth || 1280 : 1280;
   const screenH =
     target === 'real-win10' && realStatus.connected ? realStatus.screenHeight || 720 : 720;
+  const isAndroidTermux =
+    (realStatus.osVersion || '').toLowerCase().includes('android') ||
+    (realStatus.osVersion || '').toLowerCase().includes('termux');
   const screenInfo =
     target === 'real-win10' && realStatus.connected
-      ? `Haqiqiy PC (${realStatus.hostname}, ${screenW}x${screenH})`
+      ? isAndroidTermux
+        ? `Ulangan Android telefon (Termux): ${realStatus.hostname}, ${realStatus.osVersion}, ${screenW}x${screenH}. Terminal (run_bash), fayllar (file_list/file_read/file_write/file_delete), brauzer (browser_navigate) va ADB/Root bo'lsa bosish/yozish to'g'ridan-to'g'ri telefonda bajariladi.`
+        : `Haqiqiy PC (${realStatus.hostname}, ${realStatus.osVersion || 'PC'}, ${screenW}x${screenH})`
       : `Debian GNU/Linux 12 X11 desktop (${screenW}x${screenH}, DISPLAY=:99, root)`;
 
   const systemInstruction = buildJarvisSystemInstruction(screenInfo);

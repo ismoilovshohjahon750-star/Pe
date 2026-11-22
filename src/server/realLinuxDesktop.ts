@@ -742,7 +742,7 @@ class RealLinuxDesktopManager {
     const lines = text.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].length > 0) {
-        await execFileAsync('xdotool', ['type', '--delay', '10', '--', lines[i]], {
+        await execFileAsync('xdotool', ['type', '--clearmodifiers', '--delay', '10', '--', lines[i]], {
           env: this.env(),
         });
       }

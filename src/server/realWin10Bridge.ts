@@ -173,7 +173,13 @@ class RealWin10Bridge {
             timestamp: now,
           };
           this.latestFrame = frame;
-          this.status = { ...this.status, lastFrameAt: now, fps };
+          this.status = {
+            ...this.status,
+            screenWidth: frame.width,
+            screenHeight: frame.height,
+            lastFrameAt: now,
+            fps,
+          };
           for (const fn of this.frameListeners) fn(frame);
         } else if (msg.type === 'agent:result') {
           const requestId = String(msg.requestId || '');
