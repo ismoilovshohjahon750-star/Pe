@@ -55,16 +55,17 @@ export function PcConnectModal({
 
   const canBrowserShare =
     typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getDisplayMedia);
-  const cleanStreamUrl = streamUrl.trim() || 'http://10.180.218.4:8080/';
-  const cleanStreamPin = streamPin.trim();
+  const safeStreamUrl = (streamUrl.trim() || 'http://10.180.218.4:8080/').replace(/["\\$`]/g, '');
+  const cleanStreamPin = streamPin.trim().replace(/["\\$`]/g, '');
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
   const exeBuildCommand = `cd $HOME; curl.exe -sL "${origin}/api/real-pc-agent-builder.bat" -o JarvisPcAgent-Setup.bat; .\\JarvisPcAgent-Setup.bat`;
   const pipCommand = 'pip install mss pillow pyautogui websockets';
   const pyRunCommand = `cd $HOME; python -c "import urllib.request,runpy; urllib.request.urlretrieve('${origin}/api/real-pc-agent.py','real-pc-agent.py'); runpy.run_path('real-pc-agent.py',run_name='__main__')"`;
-  const termuxCommand = `pkg update -y && pkg install -y python && pip install -q websockets && curl -sL "${origin}/api/android-termux-agent.py" -o $HOME/android-termux-agent.py && python $HOME/android-termux-agent.py`;
+  const ensureTermuxAgent = `((command -v python >/dev/null 2>&1 && command -v curl >/dev/null 2>&1) || (pkg update -y && pkg install -y python curl)) && (python -c "import websockets" 2>/dev/null || pip install -q websockets) && curl -fsSL "${origin}/api/android-termux-agent.py" -o "$HOME/android-termux-agent.py"`;
+  const termuxCommand = `${ensureTermuxAgent} && python "$HOME/android-termux-agent.py"`;
   const streamLaunchCommand = cleanStreamPin
-    ? `SCREEN_STREAM_PIN="${cleanStreamPin}" python $HOME/android-termux-agent.py "${cleanStreamUrl}"`
-    : `python $HOME/android-termux-agent.py "${cleanStreamUrl}"`;
+    ? `${ensureTermuxAgent} && SCREEN_STREAM_PIN="${cleanStreamPin}" python "$HOME/android-termux-agent.py" "${safeStreamUrl}"`
+    : `${ensureTermuxAgent} && python "$HOME/android-termux-agent.py" "${safeStreamUrl}"`;
 
   const applyStreamUrl = async () => {
     const trimmed = streamUrl.trim();
