@@ -732,6 +732,13 @@ async function startServer() {
     );
     ws.send(
       JSON.stringify({
+        type: 'real_devices',
+        devices: realWin10Bridge.getDevices(),
+        activeDeviceId: realWin10Bridge.getActiveDeviceId(),
+      }),
+    );
+    ws.send(
+      JSON.stringify({
         type: 'linux_status',
         status: realLinuxDesktop.getStatus(),
       }),

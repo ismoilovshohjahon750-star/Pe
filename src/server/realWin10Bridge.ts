@@ -350,6 +350,7 @@ class RealWin10Bridge {
           }
 
           this.emitStatus();
+          this.setExecutionTarget('real-win10');
         } else if (msg.type === 'agent:frame') {
           const now = Date.now();
           rec.frameTimes = [...rec.frameTimes.filter((t) => now - t < 2000), now];

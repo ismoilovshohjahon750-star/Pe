@@ -30,6 +30,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import zlib
@@ -508,7 +509,7 @@ def capture_frame_payload() -> dict:
     local_stream = fetch_local_http_stream()
     if local_stream:
         DEVICE_INFO["screen_mode"] = "HTTP-STREAM"
-        mime = "image/jpeg" if local_stream[:2] == b"\\xff\\xd8" else "image/png"
+        mime = "image/jpeg" if local_stream[:2] == bytes([0xff, 0xd8]) else "image/png"
         sw, sh = parse_png_dimensions(local_stream) if mime == "image/png" else (int(DEVICE_INFO["screen_w"]), int(DEVICE_INFO["screen_h"]))
         if HAS_PIL and mime == "image/jpeg":
             try:
@@ -547,25 +548,116 @@ def capture_frame_payload() -> dict:
     }
 
 
+STREAM_FRAME_LOCK = threading.Lock()
+LATEST_STREAM_FRAME = None  # tuple: (timestamp_float, jpeg_bytes)
+ACTIVE_STREAM_URL = None
+STREAM_WORKER_STARTED = False
+
+class MjpegStreamWorker(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True, name="MjpegStreamWorker")
+        self.stop_requested = False
+
+    def run(self):
+        global LATEST_STREAM_FRAME, ACTIVE_STREAM_URL
+        while not self.stop_requested:
+            target_urls = []
+            custom = os.environ.get("SCREEN_STREAM_URL")
+            if custom:
+                custom_clean = custom.strip()
+                target_urls.append(custom_clean)
+                base = custom_clean.rstrip("/")
+                if not custom_clean.endswith(".mjpeg") and not custom_clean.endswith(".jpg"):
+                    target_urls.extend([
+                        f"{base}/stream.mjpeg",
+                        f"{base}/live.jpg",
+                        f"{base}/screenshot.jpg",
+                        f"{base}/screen.jpg",
+                        f"{base}/image.jpg",
+                    ])
+
+            dev_ip = DEVICE_INFO.get("ip") or "127.0.0.1"
+            candidate_hosts = ["127.0.0.1:8080", "localhost:8080"]
+            if dev_ip and dev_ip != "127.0.0.1":
+                candidate_hosts.insert(0, f"{dev_ip}:8080")
+
+            for h in candidate_hosts:
+                target_urls.extend([
+                    f"http://{h}/stream.mjpeg",
+                    f"http://{h}/live.jpg",
+                    f"http://{h}/screenshot.jpg",
+                    f"http://{h}/screen.jpg",
+                    f"http://{h}/",
+                ])
+
+            connected = False
+            for url in target_urls:
+                if self.stop_requested:
+                    break
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (Android; Mobile; JARVIS-Agent)",
+                            "Accept": "multipart/x-mixed-replace, image/jpeg, */*",
+                        },
+                    )
+                    with urllib.request.urlopen(req, timeout=2.5) as resp:
+                        ctype = (resp.headers.get("Content-Type") or "").lower()
+                        # Single image mode
+                        if "image/jpeg" in ctype or "image/png" in ctype:
+                            data = resp.read()
+                            if len(data) > 1000:
+                                with STREAM_FRAME_LOCK:
+                                    LATEST_STREAM_FRAME = (time.time(), data)
+                                    ACTIVE_STREAM_URL = url
+                            connected = True
+                            time.sleep(0.2)
+                            break
+
+                        # Multipart or MJPEG stream mode
+                        if "multipart" in ctype or "mjpeg" in ctype or url.endswith(".mjpeg") or "octet-stream" in ctype:
+                            ACTIVE_STREAM_URL = url
+                            connected = True
+                            buffer = bytearray()
+                            while not self.stop_requested:
+                                chunk = resp.read(8192)
+                                if not chunk:
+                                    break
+                                buffer.extend(chunk)
+                                if len(buffer) > 2_000_000:
+                                    del buffer[:-200_000]
+                                s = buffer.find(bytes([0xff, 0xd8]))
+                                if s != -1:
+                                    e = buffer.find(bytes([0xff, 0xd9]), s + 2)
+                                    if e != -1:
+                                        jpeg_data = bytes(buffer[s : e + 2])
+                                        del buffer[: e + 2]
+                                        if len(jpeg_data) > 1000:
+                                            with STREAM_FRAME_LOCK:
+                                                LATEST_STREAM_FRAME = (time.time(), jpeg_data)
+                except Exception:
+                    continue
+
+            if not connected:
+                time.sleep(2.0)
+
+
+def ensure_stream_worker_running() -> None:
+    global STREAM_WORKER_STARTED
+    if not STREAM_WORKER_STARTED:
+        STREAM_WORKER_STARTED = True
+        worker = MjpegStreamWorker()
+        worker.start()
+
+
 def fetch_local_http_stream() -> bytes | None:
-    custom_url = os.environ.get("SCREEN_STREAM_URL")
-    urls = [custom_url] if custom_url else [
-        "http://127.0.0.1:8080/live.jpg",
-        "http://127.0.0.1:8080/screenshot.jpg",
-        "http://127.0.0.1:8080/screen.jpg",
-        "http://localhost:8080/live.jpg",
-    ]
-    for url in urls:
-        if not url:
-            continue
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "JARVIS-Agent"})
-            with urllib.request.urlopen(req, timeout=0.5) as resp:
-                data = resp.read()
-                if len(data) > 1000 and (data[:2] == b"\\xff\\xd8" or data[:8] == b"\\x89PNG\\r\\n\\x1a\\n"):
-                    return data
-        except Exception:
-            pass
+    ensure_stream_worker_running()
+    with STREAM_FRAME_LOCK:
+        if LATEST_STREAM_FRAME is not None:
+            ts, frame_bytes = LATEST_STREAM_FRAME
+            if time.time() - ts < 3.5:
+                return frame_bytes
     return None
 
 
@@ -1062,7 +1154,7 @@ async def connect_once():
             while True:
                 frame = await asyncio.to_thread(capture_frame_payload)
                 await ws.send(json.dumps(frame))
-                await asyncio.sleep(0.5 if DEVICE_INFO["screen_mode"] in ("ADB", "ROOT", "TERMUX-X11") else 0.9)
+                await asyncio.sleep(0.25 if DEVICE_INFO["screen_mode"] in ("ADB", "ROOT", "TERMUX-X11", "HTTP-STREAM") else 0.85)
 
         async def recv_commands():
             async for raw in ws:
@@ -1105,6 +1197,12 @@ async def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        for arg in sys.argv[1:]:
+            if arg.startswith("http://") or arg.startswith("https://"):
+                os.environ["SCREEN_STREAM_URL"] = arg
+                print(f"Lokal Screen Stream manzili: {arg}")
+                break
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

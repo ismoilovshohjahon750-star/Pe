@@ -322,15 +322,42 @@ export function PcConnectModal({
               </div>
 
               {/* Android Local HTTP Screen Stream (No-ADB) */}
-              <div className={`${LIQUID_CARD} p-4 space-y-3`}>
+              <div className={`${LIQUID_CARD} p-4 space-y-3.5`}>
                 <div className="flex items-center gap-2 font-semibold text-white">
                   <Monitor className="w-4 h-4 text-cyan-300" strokeWidth={1.75} />
                   <span>4-usul: "Screen Stream over HTTP" ilovasi (100% ADB siz, No-Root)</span>
                 </div>
                 <p className="text-white/70 leading-relaxed">
-                  Play Market yoki F-Droid dan ochiq kodli <strong>"Screen Stream over HTTP"</strong> ilovasini o‘rnatib "Start" tugmasini bosing.
-                  U Android tizimining ruxsati bilan <span className="font-mono-tabular text-cyan-200">http://127.0.0.1:8080</span> manzilida ekran tasvirini beradi.
-                  Termux agentimiz uni avtomatik aniqlab, darhol serverga jonli uzatadi!
+                  Play Market yoki F-Droid dan <strong>"Screen Stream over HTTP"</strong> ilovasini o‘rnatib <em>"Start"</em> tugmasini bosing.
+                  Ilova bergan manzil (masalan, <span className="font-mono-tabular text-cyan-200">http://10.180.218.4:8080/</span> yoki <span className="font-mono-tabular text-cyan-200">http://127.0.0.1:8080/</span>) bo‘yicha Termux agenti MJPEG oqimini avtomatik tutib oladi va serverga 4 FPS tezlikda jonli uzatadi:
+                </p>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-white/70">
+                    <span>Termux'da oqim manzili bilan ishga tushirish:</span>
+                    <button
+                      type="button"
+                      onClick={() => copyText('screen-stream', 'python $HOME/android-termux-agent.py http://10.180.218.4:8080/')}
+                      className={`${LIQUID_PILL_BTN} px-3 py-1`}
+                    >
+                      {copiedStep === 'screen-stream' ? (
+                        <Check className="w-3 h-3 text-emerald-300 relative z-10" strokeWidth={2} />
+                      ) : (
+                        <Copy className="w-3 h-3 relative z-10" strokeWidth={1.75} />
+                      )}
+                      <span className="relative z-10">{copiedStep === 'screen-stream' ? 'Nusxalandi' : 'Nusxalash'}</span>
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    readOnly
+                    value="python $HOME/android-termux-agent.py http://10.180.218.4:8080/"
+                    onClick={(e) => e.currentTarget.select()}
+                    aria-label="Screen Stream manzilini Termux agentiga berish buyrug'i"
+                    className={LIQUID_INPUT}
+                  />
+                </div>
+                <p className="text-[11px] text-cyan-200/80">
+                  Termux ilova ichidan <span className="font-mono-tabular">127.0.0.1:8080/stream.mjpeg</span> ga ham avtomatik ulanadi.
                 </p>
               </div>
             </>

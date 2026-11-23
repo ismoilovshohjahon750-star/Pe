@@ -147,21 +147,32 @@ export default function App() {
               lastWsFrameAtRef.current = Date.now();
               setLinuxFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
             } else if (msg.type === 'real_agent_status' && msg.status) {
-              setRealAgentStatus(msg.status as RealAgentStatus);
+              const st = msg.status as RealAgentStatus;
+              setRealAgentStatus(st);
+              if (st.connected) {
+                setExecutionTarget('real-win10');
+              }
             } else if (msg.type === 'real_devices') {
               const devList = (msg as { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null }).devices;
               const actId = (msg as { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null }).activeDeviceId;
-              if (devList) setConnectedDevices(devList);
+              if (devList) {
+                setConnectedDevices(devList);
+                if (devList.length > 0) {
+                  setExecutionTarget('real-win10');
+                }
+              }
               if (actId !== undefined) setActiveDeviceId(actId);
             } else if (msg.type === 'real_agent_frame' && msg.frame) {
               lastWsFrameAtRef.current = Date.now();
               setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
+              setExecutionTarget('real-win10');
             } else if (msg.type === 'real_agent_frame_for') {
               const dId = (msg as { deviceId?: string; frame?: RealAgentFrame }).deviceId;
               const f = (msg as { deviceId?: string; frame?: RealAgentFrame }).frame;
               if (dId && f) {
                 lastWsFrameAtRef.current = Date.now();
                 setDeviceFrames((prev) => ({ ...prev, [dId]: f }));
+                setExecutionTarget('real-win10');
               }
             } else if (msg.type === 'execution_target' && msg.target) {
               setExecutionTarget(msg.target);
@@ -395,7 +406,10 @@ export default function App() {
     }).catch(() => {});
   };
 
-  const showingRealPc = executionTarget === 'real-win10' && realAgentStatus.connected;
+  const hasRealDevice = realAgentStatus.connected || connectedDevices.length > 0;
+  const showingRealPc =
+    (executionTarget === 'real-win10' && hasRealDevice) ||
+    (hasRealDevice && executionTarget !== 'linux');
 
   return (
     <div className="h-screen h-[100dvh] w-screen w-full flex flex-col bg-[#03060C] text-slate-100 overflow-hidden">
@@ -416,6 +430,22 @@ export default function App() {
             <Cpu className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
             <span className="relative z-10">J.A.R.V.I.S.</span>
           </button>
+
+          {/* Quick Phone Screen switch if user is on Linux while phone is connected */}
+          {hasRealDevice && executionTarget === 'linux' && (
+            <button
+              type="button"
+              onClick={() => {
+                switchTarget('real-win10');
+                if (connectedDevices[0]) setActiveDeviceId(connectedDevices[0].id);
+              }}
+              className={`${LIQUID_PILL_BTN} bg-emerald-500/30 border-emerald-300 text-white animate-pulse`}
+              title="Telefoningiz ekrani tayyor! Ochish uchun bosing"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-emerald-300 relative z-10" />
+              <span className="relative z-10 font-bold">📲 Telefon Ekrani (Ochish)</span>
+            </button>
+          )}
 
           {/* Connected Device Pills */}
           <button
