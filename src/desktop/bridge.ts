@@ -246,7 +246,14 @@ export function resolveTargetDeviceIds(
   if (exact) return [exact.id];
 
   if (raw === 'android' || raw === 'phone' || raw === 'telefon' || raw === 'termux' || raw === 'mobile') {
-    const matches = devices.filter((d) => d.kind === 'android').map((d) => d.id);
+    const matches = devices
+      .filter(
+        (d) =>
+          d.kind === 'android' ||
+          `${d.hostname} ${d.osVersion}`.toLowerCase().includes('android') ||
+          `${d.hostname} ${d.osVersion}`.toLowerCase().includes('telefon'),
+      )
+      .map((d) => d.id);
     if (matches.length > 0) return matches;
   }
 

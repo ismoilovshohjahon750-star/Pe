@@ -21,9 +21,11 @@ Run in Termux:
 import asyncio
 import base64
 import getpass
+import http.cookiejar
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -32,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 import zlib
 from pathlib import Path
@@ -205,6 +208,36 @@ def detect_local_ip() -> str:
             return "127.0.0.1"
 
 
+def get_all_local_ips() -> list[str]:
+    ips = []
+    seen = set()
+
+    def add_ip(candidate: str) -> None:
+        c = candidate.strip()
+        if not c or c in seen or c.startswith("169.254."):
+            return
+        seen.add(c)
+        ips.append(c)
+
+    primary = detect_local_ip()
+    if primary:
+        add_ip(primary)
+
+    # Parse ip / ifconfig output on Termux Android to capture Wi-Fi, hotspot, and cellular IPs
+    for cmd in (["ip", "-4", "-o", "addr", "show"], ["ifconfig"]):
+        if shutil.which(cmd[0]):
+            try:
+                out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=1.5)
+                for match in re.findall(r"\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b", out):
+                    if not match.startswith("255.") and not match.endswith(".255") and match != "0.0.0.0":
+                        add_ip(match)
+            except Exception:
+                pass
+
+    add_ip("127.0.0.1")
+    return ips
+
+
 def init_device_info() -> None:
     model = getprop("ro.product.model") or getprop("ro.product.device") or socket.gethostname()
     brand = getprop("ro.product.brand")
@@ -292,6 +325,37 @@ def parse_png_dimensions(png_bytes: bytes) -> tuple[int, int]:
         w, h = struct.unpack(">II", png_bytes[16:24])
         if w > 0 and h > 0:
             return int(w), int(h)
+    return int(DEVICE_INFO["screen_w"]), int(DEVICE_INFO["screen_h"])
+
+
+def parse_jpeg_dimensions(jpeg_bytes: bytes) -> tuple[int, int]:
+    if len(jpeg_bytes) < 4 or jpeg_bytes[:2] != bytes([0xff, 0xd8]):
+        return int(DEVICE_INFO["screen_w"]), int(DEVICE_INFO["screen_h"])
+    i = 2
+    n = len(jpeg_bytes)
+    sof_markers = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+    while i + 4 < n:
+        if jpeg_bytes[i] != 0xFF:
+            i += 1
+            continue
+        while i < n and jpeg_bytes[i] == 0xFF:
+            i += 1
+        if i >= n:
+            break
+        marker = jpeg_bytes[i]
+        i += 1
+        if marker in (0xD8, 0xD9, 0x00) or (0xD0 <= marker <= 0xD7):
+            continue
+        if i + 2 > n:
+            break
+        seg_len = struct.unpack(">H", jpeg_bytes[i : i + 2])[0]
+        if seg_len < 2 or i + seg_len > n:
+            break
+        if marker in sof_markers and seg_len >= 7:
+            h, w = struct.unpack(">HH", jpeg_bytes[i + 3 : i + 7])
+            if w > 0 and h > 0:
+                return int(w), int(h)
+        i += seg_len
     return int(DEVICE_INFO["screen_w"]), int(DEVICE_INFO["screen_h"])
 
 
@@ -509,16 +573,29 @@ def capture_frame_payload() -> dict:
     local_stream = fetch_local_http_stream()
     if local_stream:
         DEVICE_INFO["screen_mode"] = "HTTP-STREAM"
-        mime = "image/jpeg" if local_stream[:2] == bytes([0xff, 0xd8]) else "image/png"
-        sw, sh = parse_png_dimensions(local_stream) if mime == "image/png" else (int(DEVICE_INFO["screen_w"]), int(DEVICE_INFO["screen_h"]))
-        if HAS_PIL and mime == "image/jpeg":
-            try:
-                im = Image.open(io.BytesIO(local_stream))
-                sw, sh = im.size
-                DEVICE_INFO["screen_w"] = sw
-                DEVICE_INFO["screen_h"] = sh
-            except Exception:
-                pass
+        is_jpeg = local_stream[:2] == bytes([0xff, 0xd8])
+        mime = "image/jpeg" if is_jpeg else "image/png"
+        if is_jpeg:
+            sw, sh = parse_jpeg_dimensions(local_stream)
+            if HAS_PIL and (sw <= 0 or sh <= 0 or sw > 1280 or sh > 1280):
+                try:
+                    im = Image.open(io.BytesIO(local_stream)).convert("RGB")
+                    sw, sh = im.size
+                    max_side = max(sw, sh)
+                    if max_side > 1080:
+                        ratio = 1080.0 / max_side
+                        sw = max(1, int(sw * ratio))
+                        sh = max(1, int(sh * ratio))
+                        im = im.resize((sw, sh))
+                        out = io.BytesIO()
+                        im.save(out, format="JPEG", quality=62)
+                        local_stream = out.getvalue()
+                except Exception:
+                    pass
+        else:
+            sw, sh = parse_png_dimensions(local_stream)
+        DEVICE_INFO["screen_w"] = sw
+        DEVICE_INFO["screen_h"] = sh
         return {
             "type": "agent:frame",
             "mimeType": mime,
@@ -551,96 +628,229 @@ def capture_frame_payload() -> dict:
 STREAM_FRAME_LOCK = threading.Lock()
 LATEST_STREAM_FRAME = None  # tuple: (timestamp_float, jpeg_bytes)
 ACTIVE_STREAM_URL = None
+STREAM_ACTIVE = False
 STREAM_WORKER_STARTED = False
+STREAM_WAKE_EVENT = threading.Event()
+
+
+def _tcp_port_open(host: str, port: int, timeout: float = 0.35) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _set_resp_read_timeout(resp, timeout_sec: float) -> None:
+    try:
+        raw_sock = getattr(getattr(resp, "fp", None), "raw", None)
+        sock = getattr(raw_sock, "_sock", None)
+        if sock is not None:
+            sock.settimeout(timeout_sec)
+    except Exception:
+        pass
+
 
 class MjpegStreamWorker(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True, name="MjpegStreamWorker")
         self.stop_requested = False
 
+    def _build_candidate_bases(self) -> list[str]:
+        bases = []
+        seen = set()
+
+        def add_base(u: str) -> None:
+            clean = u.strip().rstrip("/")
+            if clean and clean not in seen:
+                seen.add(clean)
+                bases.append(clean)
+
+        custom = os.environ.get("SCREEN_STREAM_URL", "").strip()
+        if custom:
+            add_base(custom)
+
+        for ip in get_all_local_ips():
+            for port in (8080, 8081, 8888):
+                if _tcp_port_open(ip, port, timeout=0.35):
+                    add_base(f"http://{ip}:{port}")
+        if _tcp_port_open("127.0.0.1", 8080, timeout=0.25):
+            add_base("http://127.0.0.1:8080")
+        return bases
+
+    def _discover_urls_from_base(self, opener, base_url: str) -> list[str]:
+        candidates = []
+        parsed = urllib.parse.urlparse(base_url)
+        if parsed.path and parsed.path != "/" and (
+            parsed.path.endswith(".mjpeg") or parsed.path.endswith(".jpg") or "mjpeg" in parsed.path.lower()
+        ):
+            candidates.append(base_url)
+            root = f"{parsed.scheme}://{parsed.netloc}"
+        else:
+            root = base_url.rstrip("/")
+
+        pin = os.environ.get("SCREEN_STREAM_PIN", "").strip()
+        try:
+            req = urllib.request.Request(
+                root + "/",
+                headers={"User-Agent": "Mozilla/5.0 (Android; Mobile; JARVIS-Agent)"},
+            )
+            with opener.open(req, timeout=1.5) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "multipart" in ctype or "mjpeg" in ctype or "image/" in ctype:
+                    return [root + "/"]
+                if "text/html" in ctype:
+                    html = resp.read(65536).decode("utf-8", "replace")
+                    if "pin" in html.lower() and pin:
+                        form_data = urllib.parse.urlencode({"pin": pin}).encode("ascii")
+                        post_req = urllib.request.Request(
+                            root + "/",
+                            data=form_data,
+                            headers={"User-Agent": "Mozilla/5.0 (Android; Mobile; JARVIS-Agent)"},
+                        )
+                        try:
+                            with opener.open(post_req, timeout=1.5) as post_resp:
+                                html = post_resp.read(65536).decode("utf-8", "replace")
+                        except Exception:
+                            pass
+                    # Extract <img src="..."> or stream URLs from ScreenStream HTML
+                    for m in re.findall(r"""src=["']([^"']+)["']""", html, re.IGNORECASE):
+                        if any(k in m.lower() for k in ("mjpeg", "stream", "screen", "live", "shot", "video", ".jpg")):
+                            full = urllib.parse.urljoin(root + "/", m)
+                            if full not in candidates:
+                                candidates.append(full)
+                    for m in re.findall(r"""["']([^"']*stream\\.mjpeg[^"']*)["']""", html, re.IGNORECASE):
+                        full = urllib.parse.urljoin(root + "/", m)
+                        if full not in candidates:
+                            candidates.append(full)
+                    if "pin" in html.lower() and not pin and not candidates:
+                        add_log("HTTP-STREAM PIN LOCKED")
+                        add_term_output("[HTTP-STREAM] PIN kod yoqilgan! Screen Stream sozlamasida PIN ni o'chiring.")
+        except Exception:
+            pass
+
+        for suffix in (
+            "/stream.mjpeg",
+            "/screen.mjpeg",
+            "/mjpeg",
+            "/live.jpg",
+            "/screen.jpg",
+            "/screenshot.jpg",
+            "/image.jpg",
+            "/",
+        ):
+            full = root + suffix
+            if full not in candidates:
+                candidates.append(full)
+        return candidates
+
     def run(self):
-        global LATEST_STREAM_FRAME, ACTIVE_STREAM_URL
+        global LATEST_STREAM_FRAME, ACTIVE_STREAM_URL, STREAM_ACTIVE
+        cookie_jar = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
         while not self.stop_requested:
-            target_urls = []
-            custom = os.environ.get("SCREEN_STREAM_URL")
-            if custom:
-                custom_clean = custom.strip()
-                target_urls.append(custom_clean)
-                base = custom_clean.rstrip("/")
-                if not custom_clean.endswith(".mjpeg") and not custom_clean.endswith(".jpg"):
-                    target_urls.extend([
-                        f"{base}/stream.mjpeg",
-                        f"{base}/live.jpg",
-                        f"{base}/screenshot.jpg",
-                        f"{base}/screen.jpg",
-                        f"{base}/image.jpg",
-                    ])
-
-            dev_ip = DEVICE_INFO.get("ip") or "127.0.0.1"
-            candidate_hosts = ["127.0.0.1:8080", "localhost:8080"]
-            if dev_ip and dev_ip != "127.0.0.1":
-                candidate_hosts.insert(0, f"{dev_ip}:8080")
-
-            for h in candidate_hosts:
-                target_urls.extend([
-                    f"http://{h}/stream.mjpeg",
-                    f"http://{h}/live.jpg",
-                    f"http://{h}/screenshot.jpg",
-                    f"http://{h}/screen.jpg",
-                    f"http://{h}/",
-                ])
-
+            STREAM_WAKE_EVENT.clear()
+            bases = self._build_candidate_bases()
             connected = False
-            for url in target_urls:
-                if self.stop_requested:
-                    break
-                try:
-                    req = urllib.request.Request(
-                        url,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Android; Mobile; JARVIS-Agent)",
-                            "Accept": "multipart/x-mixed-replace, image/jpeg, */*",
-                        },
-                    )
-                    with urllib.request.urlopen(req, timeout=2.5) as resp:
-                        ctype = (resp.headers.get("Content-Type") or "").lower()
-                        # Single image mode
-                        if "image/jpeg" in ctype or "image/png" in ctype:
-                            data = resp.read()
-                            if len(data) > 1000:
-                                with STREAM_FRAME_LOCK:
-                                    LATEST_STREAM_FRAME = (time.time(), data)
-                                    ACTIVE_STREAM_URL = url
-                            connected = True
-                            time.sleep(0.2)
-                            break
 
-                        # Multipart or MJPEG stream mode
-                        if "multipart" in ctype or "mjpeg" in ctype or url.endswith(".mjpeg") or "octet-stream" in ctype:
-                            ACTIVE_STREAM_URL = url
-                            connected = True
-                            buffer = bytearray()
-                            while not self.stop_requested:
-                                chunk = resp.read(8192)
-                                if not chunk:
+            for base in bases:
+                if self.stop_requested or STREAM_WAKE_EVENT.is_set():
+                    break
+                target_urls = self._discover_urls_from_base(opener, base)
+                for url in target_urls:
+                    if self.stop_requested or STREAM_WAKE_EVENT.is_set():
+                        break
+                    try:
+                        req = urllib.request.Request(
+                            url,
+                            headers={
+                                "User-Agent": "Mozilla/5.0 (Android; Mobile; JARVIS-Agent)",
+                                "Accept": "multipart/x-mixed-replace, image/jpeg, */*",
+                            },
+                        )
+                        with opener.open(req, timeout=2.0) as resp:
+                            ctype = (resp.headers.get("Content-Type") or "").lower()
+                            # Single JPEG / PNG snapshot polling
+                            if "image/jpeg" in ctype or "image/png" in ctype:
+                                data = resp.read()
+                                if len(data) > 1000:
+                                    if not STREAM_ACTIVE or ACTIVE_STREAM_URL != url:
+                                        print(f"[HTTP-STREAM] Jonli ekran ulandi -> {url}")
+                                        add_log(f"STREAM: {url[:28]}")
+                                        add_term_output(f"[HTTP-STREAM] Ulandi: {url}")
+                                    with STREAM_FRAME_LOCK:
+                                        LATEST_STREAM_FRAME = (time.time(), data)
+                                        ACTIVE_STREAM_URL = url
+                                        STREAM_ACTIVE = True
+                                    connected = True
+                                    # Keep polling this working snapshot URL smoothly
+                                    while not self.stop_requested and not STREAM_WAKE_EVENT.is_set():
+                                        time.sleep(0.22)
+                                        try:
+                                            with opener.open(req, timeout=1.5) as snap_resp:
+                                                snap = snap_resp.read()
+                                                if len(snap) > 1000:
+                                                    with STREAM_FRAME_LOCK:
+                                                        LATEST_STREAM_FRAME = (time.time(), snap)
+                                                        STREAM_ACTIVE = True
+                                        except Exception:
+                                            break
                                     break
-                                buffer.extend(chunk)
-                                if len(buffer) > 2_000_000:
-                                    del buffer[:-200_000]
-                                s = buffer.find(bytes([0xff, 0xd8]))
-                                if s != -1:
-                                    e = buffer.find(bytes([0xff, 0xd9]), s + 2)
-                                    if e != -1:
-                                        jpeg_data = bytes(buffer[s : e + 2])
-                                        del buffer[: e + 2]
+
+                            # Multipart MJPEG continuous stream
+                            if "multipart" in ctype or "mjpeg" in ctype or url.endswith(".mjpeg") or "octet-stream" in ctype:
+                                _set_resp_read_timeout(resp, 25.0)
+                                if not STREAM_ACTIVE or ACTIVE_STREAM_URL != url:
+                                    print(f"[HTTP-STREAM] MJPEG oqim ulandi -> {url}")
+                                    add_log(f"MJPEG: {url[:28]}")
+                                    add_term_output(f"[HTTP-STREAM] MJPEG ulandi: {url}")
+                                ACTIVE_STREAM_URL = url
+                                STREAM_ACTIVE = True
+                                connected = True
+                                buffer = bytearray()
+                                while not self.stop_requested and not STREAM_WAKE_EVENT.is_set():
+                                    chunk = resp.read(16384)
+                                    if not chunk:
+                                        break
+                                    buffer.extend(chunk)
+                                    if len(buffer) > 3_000_000:
+                                        del buffer[:-300_000]
+                                    # Extract complete frames from buffer
+                                    while True:
+                                        s = buffer.find(bytes([0xff, 0xd8]))
+                                        if s == -1:
+                                            if len(buffer) > 4096:
+                                                del buffer[:-64]
+                                            break
+                                        # If multipart Content-Length header precedes SOI, use exact slice when available
+                                        header_slice = bytes(buffer[max(0, s - 256) : s])
+                                        cl_match = re.search(br"Content-Length:\\s*(\\d+)", header_slice, re.IGNORECASE)
+                                        if cl_match:
+                                            cl_len = int(cl_match.group(1))
+                                            if len(buffer) < s + cl_len:
+                                                break
+                                            jpeg_data = bytes(buffer[s : s + cl_len])
+                                            del buffer[: s + cl_len]
+                                        else:
+                                            e = buffer.find(bytes([0xff, 0xd9]), s + 2)
+                                            if e == -1:
+                                                break
+                                            jpeg_data = bytes(buffer[s : e + 2])
+                                            del buffer[: e + 2]
                                         if len(jpeg_data) > 1000:
                                             with STREAM_FRAME_LOCK:
                                                 LATEST_STREAM_FRAME = (time.time(), jpeg_data)
-                except Exception:
-                    continue
+                                                STREAM_ACTIVE = True
+                                if connected:
+                                    break
+                    except Exception:
+                        continue
+                if connected:
+                    break
 
             if not connected:
-                time.sleep(2.0)
+                STREAM_ACTIVE = False
+                STREAM_WAKE_EVENT.wait(1.5)
 
 
 def ensure_stream_worker_running() -> None:
@@ -656,7 +866,7 @@ def fetch_local_http_stream() -> bytes | None:
     with STREAM_FRAME_LOCK:
         if LATEST_STREAM_FRAME is not None:
             ts, frame_bytes = LATEST_STREAM_FRAME
-            if time.time() - ts < 3.5:
+            if STREAM_ACTIVE or (time.time() - ts < 10.0):
                 return frame_bytes
     return None
 
@@ -876,6 +1086,20 @@ def perform_android_action(args: dict) -> str:
         add_term_output(f"[SHARE] {len(text)} chars")
         return out
 
+    if action == "set_stream_url":
+        stream_url = str(args.get("url") or "").strip()
+        stream_pin = str(args.get("pin") or "").strip()
+        if not stream_url:
+            raise ValueError("url is required for set_stream_url")
+        os.environ["SCREEN_STREAM_URL"] = stream_url
+        if stream_pin:
+            os.environ["SCREEN_STREAM_PIN"] = stream_pin
+        ensure_stream_worker_running()
+        STREAM_WAKE_EVENT.set()
+        add_log(f"SET STREAM: {stream_url[:24]}")
+        add_term_output(f"[HTTP-STREAM] Yangi manzil: {stream_url}")
+        return f"Stream URL updated to {stream_url}"
+
     if action == "status":
         refresh_battery_status(force=True)
         return json.dumps({
@@ -884,6 +1108,8 @@ def perform_android_action(args: dict) -> str:
             "battery": DEVICE_INFO["battery"],
             "ip": DEVICE_INFO["ip"],
             "screen_mode": DEVICE_INFO["screen_mode"],
+            "stream_url": ACTIVE_STREAM_URL,
+            "stream_active": STREAM_ACTIVE,
             "has_termux_api": DEVICE_INFO["has_termux_api"],
             "has_adb": has_adb_device(),
             "has_root": check_root_available(),
@@ -1135,7 +1361,9 @@ def run_tool(tool: str, args: dict):
 
 async def connect_once():
     init_device_info()
-    print(f"Android Termux ulanmoqda -> {WS_URI} ...")
+    ensure_stream_worker_running()
+    local_ips = ", ".join(get_all_local_ips())
+    print(f"Android Termux ulanmoqda -> {WS_URI} (Lokal IP: {local_ips}) ...")
     async with websockets.connect(WS_URI, max_size=16 * 1024 * 1024, ping_interval=15) as ws:
         hello = {
             "type": "agent:hello",

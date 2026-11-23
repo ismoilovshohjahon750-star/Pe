@@ -12,9 +12,11 @@ import {
 
 interface ConnectedDeviceRecord {
   id: string;
-  ws: WebSocket;
+  ws: WebSocket | null;
   kind: DeviceKind;
   isBrowserShare: boolean;
+  browserSessionId?: string;
+  disconnectTimer?: ReturnType<typeof setTimeout>;
   hostname: string;
   osVersion: string;
   username: string;
@@ -186,12 +188,16 @@ class RealWin10Bridge {
     return `${kind}-${this.seq}-${Date.now().toString(36).slice(-4)}`;
   }
 
-  private removeDeviceBySocket(ws: WebSocket, reason: string): void {
-    const id = this.socketToDeviceId.get(ws);
-    if (!id) return;
-    this.socketToDeviceId.delete(ws);
+  private removeDeviceById(id: string, reason: string): void {
     const removed = this.devices.get(id);
-    if (!removed || removed.ws !== ws) return;
+    if (!removed) return;
+    if (removed.disconnectTimer) {
+      clearTimeout(removed.disconnectTimer);
+      removed.disconnectTimer = undefined;
+    }
+    if (removed.ws && this.socketToDeviceId.get(removed.ws) === id) {
+      this.socketToDeviceId.delete(removed.ws);
+    }
     this.devices.delete(id);
 
     for (const [reqId, waiter] of this.pending.entries()) {
@@ -218,23 +224,86 @@ class RealWin10Bridge {
     }
   }
 
-  startBrowserShare(ws: WebSocket, info: Record<string, unknown>): void {
-    // Replace only previous browser share from the same socket or existing browser share
-    for (const existing of Array.from(this.devices.values())) {
-      if (existing.isBrowserShare) {
-        this.removeDeviceBySocket(existing.ws, 'Browser share restarted');
+  private removeDeviceBySocket(ws: WebSocket, reason: string): void {
+    const id = this.socketToDeviceId.get(ws);
+    if (!id) return;
+    this.socketToDeviceId.delete(ws);
+    const removed = this.devices.get(id);
+    if (!removed || removed.ws !== ws) return;
+    this.removeDeviceById(id, reason);
+  }
+
+  private findBrowserShareBySession(sessionId?: string): ConnectedDeviceRecord | null {
+    for (const rec of this.devices.values()) {
+      if (rec.isBrowserShare && (!sessionId || rec.browserSessionId === sessionId)) {
+        return rec;
       }
     }
+    return null;
+  }
 
+  private refreshBrowserDisconnectTimer(rec: ConnectedDeviceRecord): void {
+    if (rec.disconnectTimer) {
+      clearTimeout(rec.disconnectTimer);
+    }
+    rec.disconnectTimer = setTimeout(() => {
+      const current = this.devices.get(rec.id);
+      if (!current) return;
+      const elapsed = current.lastFrameAt ? Date.now() - current.lastFrameAt : Infinity;
+      if (elapsed >= 14000) {
+        this.removeDeviceById(rec.id, 'Browser screen share timed out');
+      } else {
+        this.refreshBrowserDisconnectTimer(current);
+      }
+    }, 15000);
+    rec.disconnectTimer.unref();
+  }
+
+  startBrowserShare(ws: WebSocket | null, info: Record<string, unknown>): void {
+    const sessionId = typeof info.sessionId === 'string' && info.sessionId ? info.sessionId : undefined;
     const host = String(info.hostname || 'Browser Screen Share');
     const osVer = String(info.osVersion || 'Browser Display');
     const kind = detectDeviceKind(osVer, host, true);
+
+    // If same browser session reconnects after mobile background hiccup, reuse record smoothly
+    const existingSame = sessionId ? this.findBrowserShareBySession(sessionId) : null;
+    if (existingSame) {
+      if (existingSame.disconnectTimer) {
+        clearTimeout(existingSame.disconnectTimer);
+        existingSame.disconnectTimer = undefined;
+      }
+      if (existingSame.ws && existingSame.ws !== ws) {
+        this.socketToDeviceId.delete(existingSame.ws);
+      }
+      existingSame.ws = ws;
+      existingSame.hostname = host;
+      existingSame.osVersion = osVer;
+      existingSame.username = String(info.username || existingSame.username);
+      existingSame.screenWidth = Number(info.screenWidth || existingSame.screenWidth || 1280);
+      existingSame.screenHeight = Number(info.screenHeight || existingSame.screenHeight || 720);
+      if (ws) {
+        this.socketToDeviceId.set(ws, existingSame.id);
+      }
+      this.activeDeviceId = existingSame.id;
+      this.emitStatus();
+      this.setExecutionTarget('real-win10');
+      return;
+    }
+
+    // Replace any other older browser share
+    for (const existing of Array.from(this.devices.values())) {
+      if (existing.isBrowserShare) {
+        this.removeDeviceById(existing.id, 'Browser share restarted');
+      }
+    }
+
     const id = this.createDeviceId(kind);
     const rec: ConnectedDeviceRecord = {
       id,
       ws,
       kind,
       isBrowserShare: true,
+      ...(sessionId ? { browserSessionId: sessionId } : {}),
       hostname: host,
       osVersion: osVer,
       username: String(info.username || 'User'),
@@ -248,18 +317,17 @@ class RealWin10Bridge {
     };
 
     this.devices.set(id, rec);
-    this.socketToDeviceId.set(ws, id);
+    if (ws) {
+      this.socketToDeviceId.set(ws, id);
+    } else {
+      this.refreshBrowserDisconnectTimer(rec);
+    }
     this.activeDeviceId = id;
     this.emitStatus();
     this.setExecutionTarget('real-win10');
   }
 
-  pushBrowserFrame(ws: WebSocket, msg: Record<string, unknown>): void {
-    const id = this.socketToDeviceId.get(ws);
-    if (!id) return;
-    const rec = this.devices.get(id);
-    if (!rec || !rec.isBrowserShare) return;
-
+  private recordBrowserFrame(rec: ConnectedDeviceRecord, msg: Record<string, unknown>): void {
     const now = Date.now();
     rec.frameTimes = [...rec.frameTimes.filter((t) => now - t < 2000), now];
     rec.fps = Math.round((rec.frameTimes.length / 2) * 10) / 10;
@@ -279,10 +347,54 @@ class RealWin10Bridge {
     rec.screenHeight = height;
     rec.lastFrameAt = now;
 
+    if (rec.disconnectTimer) {
+      this.refreshBrowserDisconnectTimer(rec);
+    }
+
     for (const fn of this.deviceFrameListeners) fn(rec.id, frame);
     if (this.activeDeviceId === rec.id) {
       for (const fn of this.frameListeners) fn(frame);
     }
+  }
+
+  pushBrowserFrame(ws: WebSocket, msg: Record<string, unknown>): void {
+    let id = this.socketToDeviceId.get(ws);
+    if (!id && typeof msg.sessionId === 'string' && msg.sessionId) {
+      const existing = this.findBrowserShareBySession(msg.sessionId);
+      if (existing) {
+        existing.ws = ws;
+        this.socketToDeviceId.set(ws, existing.id);
+        id = existing.id;
+      }
+    }
+    if (!id) return;
+    const rec = this.devices.get(id);
+    if (!rec || !rec.isBrowserShare) return;
+    this.recordBrowserFrame(rec, msg);
+  }
+
+  pushBrowserFrameHttp(msg: Record<string, unknown>): void {
+    const sessionId = typeof msg.sessionId === 'string' && msg.sessionId ? msg.sessionId : undefined;
+    let rec = sessionId ? this.findBrowserShareBySession(sessionId) : this.findBrowserShareBySession();
+    if (!rec) {
+      this.startBrowserShare(null, msg);
+      rec = sessionId ? this.findBrowserShareBySession(sessionId) : this.findBrowserShareBySession();
+    }
+    if (!rec || !rec.isBrowserShare) return;
+    this.recordBrowserFrame(rec, msg);
+  }
+
+  handleBrowserSocketClosed(ws: WebSocket): void {
+    const id = this.socketToDeviceId.get(ws);
+    if (!id) return;
+    this.socketToDeviceId.delete(ws);
+    const rec = this.devices.get(id);
+    if (!rec || !rec.isBrowserShare) return;
+    if (rec.ws === ws) {
+      rec.ws = null;
+    }
+    // Keep session alive for 15s grace window so mobile Chrome background / HTTP fallback doesn't drop screen
+    this.refreshBrowserDisconnectTimer(rec);
   }
 
   stopBrowserShare(ws: WebSocket): void {
@@ -290,7 +402,13 @@ class RealWin10Bridge {
     if (!id) return;
     const rec = this.devices.get(id);
     if (!rec || !rec.isBrowserShare) return;
-    this.removeDeviceBySocket(ws, 'Browser screen share stopped');
+    this.removeDeviceById(id, 'Browser screen share stopped');
+  }
+
+  stopBrowserShareHttp(sessionId?: string): void {
+    const rec = this.findBrowserShareBySession(sessionId);
+    if (!rec) return;
+    this.removeDeviceById(rec.id, 'Browser screen share stopped');
   }
 
   attachAgent(ws: WebSocket): void {
@@ -343,9 +461,9 @@ class RealWin10Bridge {
               !other.isBrowserShare &&
               other.kind === rec.kind &&
               other.hostname === rec.hostname &&
-              other.ws.readyState !== 1
+              (!other.ws || other.ws.readyState !== 1)
             ) {
-              this.removeDeviceBySocket(other.ws, 'Replaced by reconnecting device');
+              this.removeDeviceById(otherId, 'Replaced by reconnecting device');
             }
           }
 
@@ -412,10 +530,11 @@ class RealWin10Bridge {
         `Browser screen share (${rec.hostname}) supports viewing/desktop_screenshot only. Start real-pc-agent.py or android-termux-agent.py for ${tool}.`,
       );
     }
-    if (rec.ws.readyState !== 1) {
+    if (!rec.ws || rec.ws.readyState !== 1) {
       throw new Error(`Device ${rec.hostname} (${rec.id}) is disconnected`);
     }
 
+    const activeWs = rec.ws;
     const requestId = `cmd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -423,7 +542,7 @@ class RealWin10Bridge {
         reject(new Error(`Timeout waiting for ${rec.hostname} on ${tool}`));
       }, 20000);
       this.pending.set(requestId, { deviceId: rec.id, resolve, reject, timer });
-      rec.ws.send(
+      activeWs.send(
         JSON.stringify({
           type: 'cmd:exec',
           requestId,

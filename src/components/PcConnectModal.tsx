@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Check, Copy, Download, Monitor, MonitorUp, Smartphone, Square, Terminal, X } from 'lucide-react';
 import type { ExecutionTarget, RealAgentStatus } from '../desktop/bridge.ts';
 import { copyTextCrossBrowser } from '../utils/clipboard.ts';
@@ -13,6 +13,8 @@ import {
 
 interface PcConnectModalProps {
   open: boolean;
+  initialTab?: 'pc' | 'android';
+  activeDeviceId?: string | null;
   status: RealAgentStatus;
   executionTarget: ExecutionTarget;
   browserSharing: boolean;
@@ -25,6 +27,8 @@ interface PcConnectModalProps {
 
 export function PcConnectModal({
   open,
+  initialTab,
+  activeDeviceId,
   status,
   executionTarget,
   browserSharing,
@@ -35,16 +39,74 @@ export function PcConnectModal({
   onClose,
 }: PcConnectModalProps) {
   const [copiedStep, setCopiedStep] = useState<string | null>(null);
-  const [deviceTab, setDeviceTab] = useState<'pc' | 'android'>('pc');
+  const [deviceTab, setDeviceTab] = useState<'pc' | 'android'>(initialTab || 'pc');
+  const [streamUrl, setStreamUrl] = useState('http://10.180.218.4:8080/');
+  const [streamPin, setStreamPin] = useState('');
+  const [streamBusy, setStreamBusy] = useState(false);
+  const [streamFeedback, setStreamFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    if (open && initialTab) {
+      setDeviceTab(initialTab);
+    }
+  }, [open, initialTab]);
 
   if (!open) return null;
 
+  const canBrowserShare =
+    typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getDisplayMedia);
+  const cleanStreamUrl = streamUrl.trim() || 'http://10.180.218.4:8080/';
+  const cleanStreamPin = streamPin.trim();
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
   const exeBuildCommand = `cd $HOME; curl.exe -sL "${origin}/api/real-pc-agent-builder.bat" -o JarvisPcAgent-Setup.bat; .\\JarvisPcAgent-Setup.bat`;
   const pipCommand = 'pip install mss pillow pyautogui websockets';
   const pyRunCommand = `cd $HOME; python -c "import urllib.request,runpy; urllib.request.urlretrieve('${origin}/api/real-pc-agent.py','real-pc-agent.py'); runpy.run_path('real-pc-agent.py',run_name='__main__')"`;
   const termuxCommand = `pkg update -y && pkg install -y python && pip install -q websockets && curl -sL "${origin}/api/android-termux-agent.py" -o $HOME/android-termux-agent.py && python $HOME/android-termux-agent.py`;
-  const termuxAdbCommand = 'pkg install -y android-tools termux-api && adb connect <TELEFON_IP>:<PORT>';
+  const streamLaunchCommand = cleanStreamPin
+    ? `SCREEN_STREAM_PIN="${cleanStreamPin}" python $HOME/android-termux-agent.py "${cleanStreamUrl}"`
+    : `python $HOME/android-termux-agent.py "${cleanStreamUrl}"`;
+
+  const applyStreamUrl = async () => {
+    const trimmed = streamUrl.trim();
+    if (!trimmed) {
+      setStreamFeedback({ ok: false, text: 'Iltimos, Screen Stream URL manzilini kiriting.' });
+      return;
+    }
+    setStreamBusy(true);
+    setStreamFeedback(null);
+    try {
+      const resp = await fetch('/api/real-win10/stream-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: trimmed,
+          ...(cleanStreamPin ? { pin: cleanStreamPin } : {}),
+          ...(activeDeviceId ? { deviceId: activeDeviceId } : {}),
+        }),
+      });
+      const data = (await resp.json()) as { ok?: boolean; error?: string };
+      if (!resp.ok || !data.ok) {
+        setStreamFeedback({
+          ok: false,
+          text:
+            data.error ||
+            'Termux agenti hozircha ulanmagan. Pastdagi buyruqni Termux ichida ishga tushiring.',
+        });
+      } else {
+        setStreamFeedback({
+          ok: true,
+          text: `Oqim manzili (${trimmed}) Termux agentiga jonli yuborildi!`,
+        });
+      }
+    } catch {
+      setStreamFeedback({
+        ok: false,
+        text: 'Server bilan bog‘lanib bo‘lmadi. Pastdagi buyruqni Termux ichida ishga tushiring.',
+      });
+    } finally {
+      setStreamBusy(false);
+    }
+  };
 
   const copyText = (key: string, text: string) => {
     void copyTextCrossBrowser(text).then((ok) => {
@@ -222,6 +284,14 @@ export function PcConnectModal({
                   </div>
                 </div>
 
+                {!canBrowserShare && (
+                  <div className="text-amber-200 rounded-2xl bg-amber-500/15 border border-amber-300/30 px-3.5 py-2 leading-relaxed">
+                    <strong>Eslatma:</strong> Ushbu mobil brauzerda tizim ekran yozish API (
+                    <span className="font-mono-tabular">getDisplayMedia</span>) cheklangan. Telefon ekranini uzatish uchun pastdagi{' '}
+                    <strong>4-usul (Screen Stream over HTTP)</strong> yoki <strong>3-usul (Simsiz ADB)</strong> dan foydalaning.
+                  </div>
+                )}
+
                 {shareError && (
                   <div className="text-rose-200 rounded-2xl bg-rose-500/15 border border-rose-300/30 px-3.5 py-2">
                     {shareError}
@@ -322,21 +392,62 @@ export function PcConnectModal({
               </div>
 
               {/* Android Local HTTP Screen Stream (No-ADB) */}
-              <div className={`${LIQUID_CARD} p-4 space-y-3.5`}>
+              <div className={`${LIQUID_CARD} p-4 space-y-3.5 border-cyan-400/30 bg-cyan-950/15`}>
                 <div className="flex items-center gap-2 font-semibold text-white">
                   <Monitor className="w-4 h-4 text-cyan-300" strokeWidth={1.75} />
                   <span>4-usul: "Screen Stream over HTTP" ilovasi (100% ADB siz, No-Root)</span>
                 </div>
                 <p className="text-white/70 leading-relaxed">
                   Play Market yoki F-Droid dan <strong>"Screen Stream over HTTP"</strong> ilovasini o‘rnatib <em>"Start"</em> tugmasini bosing.
-                  Ilova bergan manzil (masalan, <span className="font-mono-tabular text-cyan-200">http://10.180.218.4:8080/</span> yoki <span className="font-mono-tabular text-cyan-200">http://127.0.0.1:8080/</span>) bo‘yicha Termux agenti MJPEG oqimini avtomatik tutib oladi va serverga 4 FPS tezlikda jonli uzatadi:
+                  Ilova bergan manzilni (masalan, <span className="font-mono-tabular text-cyan-200">http://10.180.218.4:8080/</span>) kiriting — Termux agenti ham lokal{' '}
+                  <span className="font-mono-tabular text-cyan-200">127.0.0.1:8080</span> va Wi-Fi IP larni avtomatik topadi:
                 </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_140px_auto] gap-2 items-center">
+                  <input
+                    type="url"
+                    value={streamUrl}
+                    onChange={(e) => setStreamUrl(e.target.value)}
+                    placeholder="http://10.180.218.4:8080/"
+                    aria-label="Screen Stream over HTTP manzili"
+                    className={LIQUID_INPUT}
+                  />
+                  <input
+                    type="text"
+                    value={streamPin}
+                    onChange={(e) => setStreamPin(e.target.value)}
+                    placeholder="PIN (ixtiyoriy)"
+                    aria-label="Screen Stream PIN kodi"
+                    className={LIQUID_INPUT}
+                  />
+                  <button
+                    type="button"
+                    disabled={streamBusy}
+                    onClick={() => void applyStreamUrl()}
+                    className={`${LIQUID_PILL_BTN} bg-cyan-500/25 border-cyan-300/60 hover:bg-cyan-500/35 text-white justify-center`}
+                  >
+                    <span className="relative z-10">{streamBusy ? 'Ulanmoqda...' : 'Oqimni Ulash'}</span>
+                  </button>
+                </div>
+
+                {streamFeedback && (
+                  <div
+                    className={`rounded-2xl px-3.5 py-2 border ${
+                      streamFeedback.ok
+                        ? 'bg-emerald-500/15 border-emerald-300/35 text-emerald-200'
+                        : 'bg-amber-500/15 border-amber-300/35 text-amber-100'
+                    }`}
+                  >
+                    {streamFeedback.text}
+                  </div>
+                )}
+
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-[11px] text-white/70">
                     <span>Termux'da oqim manzili bilan ishga tushirish:</span>
                     <button
                       type="button"
-                      onClick={() => copyText('screen-stream', 'python $HOME/android-termux-agent.py http://10.180.218.4:8080/')}
+                      onClick={() => copyText('screen-stream', streamLaunchCommand)}
                       className={`${LIQUID_PILL_BTN} px-3 py-1`}
                     >
                       {copiedStep === 'screen-stream' ? (
@@ -350,14 +461,14 @@ export function PcConnectModal({
                   <input
                     type="text"
                     readOnly
-                    value="python $HOME/android-termux-agent.py http://10.180.218.4:8080/"
+                    value={streamLaunchCommand}
                     onClick={(e) => e.currentTarget.select()}
                     aria-label="Screen Stream manzilini Termux agentiga berish buyrug'i"
                     className={LIQUID_INPUT}
                   />
                 </div>
                 <p className="text-[11px] text-cyan-200/80">
-                  Termux ilova ichidan <span className="font-mono-tabular">127.0.0.1:8080/stream.mjpeg</span> ga ham avtomatik ulanadi.
+                  Agar Termux agenti ishlab turgan bo‘lsa, yuqoridagi "Oqimni Ulash" tugmasi qayta ishga tushirmasdan manzilni jonli yangilaydi.
                 </p>
               </div>
             </>

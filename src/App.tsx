@@ -30,6 +30,7 @@ export default function App() {
   const [executionTarget, setExecutionTarget] = useState<ExecutionTarget>('linux');
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [pcModalOpen, setPcModalOpen] = useState(false);
+  const [pcModalTab, setPcModalTab] = useState<'pc' | 'android'>('pc');
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [jarvisOpen, setJarvisOpen] = useState(false);
   const [browserSharing, setBrowserSharing] = useState(false);
@@ -38,6 +39,19 @@ export default function App() {
   const shareStreamRef = useRef<MediaStream | null>(null);
   const shareTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shareWorkerRef = useRef<Worker | null>(null);
+  const shareWorkerUrlRef = useRef<string | null>(null);
+  const browserSharingRef = useRef(false);
+  const httpPostInFlightRef = useRef(false);
+  const shareSessionRef = useRef<{
+    sessionId: string;
+    hostname: string;
+    osVersion: string;
+    username: string;
+    screenWidth: number;
+    screenHeight: number;
+  } | null>(null);
+  const activeDeviceIdRef = useRef<string | null>(null);
+  const showingRealPcRef = useRef(false);
   const lastWsFrameAtRef = useRef<number>(0);
   const jarvisSyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -74,14 +88,35 @@ export default function App() {
   const syncRealAgentFrame = useCallback(() => {
     fetch('/api/real-win10/frame', { cache: 'no-store' })
       .then((r) => r.json())
-      .then((data: { status?: RealAgentStatus; frame?: RealAgentFrame | null; target?: ExecutionTarget; devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null }) => {
+      .then((data: {
+        status?: RealAgentStatus;
+        frame?: RealAgentFrame | null;
+        frames?: Record<string, RealAgentFrame>;
+        target?: ExecutionTarget;
+        devices?: ConnectedDeviceSummary[];
+        activeDeviceId?: string | null;
+      }) => {
         if (data.status) setRealAgentStatus(data.status);
         if (data.frame) {
           setRealAgentFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
         }
-        if (data.devices) setConnectedDevices(data.devices);
+        if (data.frames) {
+          setDeviceFrames((prev) => {
+            const next = { ...prev };
+            for (const [id, f] of Object.entries(data.frames || {})) {
+              next[id] = pickNewerFrame(next[id] ?? null, f) ?? f;
+            }
+            return next;
+          });
+        }
+        if (data.devices) {
+          setConnectedDevices(data.devices);
+          if (data.devices.length > 0 && !activeDeviceIdRef.current && data.activeDeviceId === undefined) {
+            setActiveDeviceId(data.devices[0].id);
+          }
+        }
         if (data.activeDeviceId !== undefined) setActiveDeviceId(data.activeDeviceId);
-        if (data.target === 'real-win10' && data.status?.connected) {
+        if (data.target === 'real-win10' && (data.status?.connected || (data.devices && data.devices.length > 0))) {
           setExecutionTarget('real-win10');
         }
       })
@@ -130,6 +165,17 @@ export default function App() {
           if (!active) return;
           attempt = 0;
           syncLinuxFrame();
+          syncRealAgentFrame();
+          if (browserSharingRef.current && shareSessionRef.current) {
+            try {
+              socket.send(JSON.stringify({
+                type: 'browser_agent:hello',
+                ...shareSessionRef.current,
+              }));
+            } catch {
+              // fallback handled during frame loop
+            }
+          }
         };
 
         socket.onmessage = (evt) => {
@@ -140,6 +186,10 @@ export default function App() {
               status?: LinuxDesktopStatus | RealAgentStatus;
               frame?: RealAgentFrame;
               target?: ExecutionTarget;
+              deviceId?: string;
+              active?: boolean;
+              devices?: ConnectedDeviceSummary[];
+              activeDeviceId?: string | null;
             };
             if (msg.type === 'linux_status' && msg.status) {
               setLinuxStatus(msg.status as LinuxDesktopStatus);
@@ -153,12 +203,15 @@ export default function App() {
                 setExecutionTarget('real-win10');
               }
             } else if (msg.type === 'real_devices') {
-              const devList = (msg as { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null }).devices;
-              const actId = (msg as { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null }).activeDeviceId;
+              const devList = msg.devices;
+              const actId = msg.activeDeviceId;
               if (devList) {
                 setConnectedDevices(devList);
                 if (devList.length > 0) {
                   setExecutionTarget('real-win10');
+                  if (!activeDeviceIdRef.current && !actId) {
+                    setActiveDeviceId(devList[0].id);
+                  }
                 }
               }
               if (actId !== undefined) setActiveDeviceId(actId);
@@ -167,11 +220,17 @@ export default function App() {
               setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
               setExecutionTarget('real-win10');
             } else if (msg.type === 'real_agent_frame_for') {
-              const dId = (msg as { deviceId?: string; frame?: RealAgentFrame }).deviceId;
-              const f = (msg as { deviceId?: string; frame?: RealAgentFrame }).frame;
+              const dId = msg.deviceId;
+              const f = msg.frame;
               if (dId && f) {
                 lastWsFrameAtRef.current = Date.now();
-                setDeviceFrames((prev) => ({ ...prev, [dId]: f }));
+                setDeviceFrames((prev) => ({
+                  ...prev,
+                  [dId]: pickNewerFrame(prev[dId] ?? null, f) ?? f,
+                }));
+                if (msg.active || !activeDeviceIdRef.current || activeDeviceIdRef.current === dId) {
+                  setRealAgentFrame((prev) => pickNewerFrame(prev, f));
+                }
                 setExecutionTarget('real-win10');
               }
             } else if (msg.type === 'execution_target' && msg.target) {
@@ -221,8 +280,11 @@ export default function App() {
         syncLinuxFrame();
         syncRealAgentFrame();
         connect();
-      } else if (Date.now() - lastWsFrameAtRef.current > 5500) {
+      } else if (Date.now() - lastWsFrameAtRef.current > 3500) {
         syncLinuxFrame();
+        if (showingRealPcRef.current) {
+          syncRealAgentFrame();
+        }
       }
     }, 1500);
 
@@ -238,6 +300,10 @@ export default function App() {
           shareWorkerRef.current.terminate();
         } catch {}
         shareWorkerRef.current = null;
+      }
+      if (shareWorkerUrlRef.current) {
+        URL.revokeObjectURL(shareWorkerUrlRef.current);
+        shareWorkerUrlRef.current = null;
       }
       if (shareTimerRef.current) clearInterval(shareTimerRef.current);
       if (jarvisSyncTimerRef.current) clearInterval(jarvisSyncTimerRef.current);
@@ -270,6 +336,10 @@ export default function App() {
       } catch {}
       shareWorkerRef.current = null;
     }
+    if (shareWorkerUrlRef.current) {
+      URL.revokeObjectURL(shareWorkerUrlRef.current);
+      shareWorkerUrlRef.current = null;
+    }
     if (shareTimerRef.current) {
       clearInterval(shareTimerRef.current);
       shareTimerRef.current = null;
@@ -278,14 +348,33 @@ export default function App() {
       shareStreamRef.current.getTracks().forEach((t) => t.stop());
       shareStreamRef.current = null;
     }
+    const prevSession = shareSessionRef.current;
+    const wasSharing = browserSharingRef.current || Boolean(prevSession);
+    shareSessionRef.current = null;
+    browserSharingRef.current = false;
     setBrowserSharing(false);
-    sendWs({ type: 'browser_agent:stop' });
-  }, [sendWs]);
+    if (wasSharing) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'browser_agent:stop', sessionId: prevSession?.sessionId }));
+      } else {
+        void fetch('/api/browser-share/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: prevSession?.sessionId }),
+        }).catch(() => {});
+      }
+    }
+  }, []);
 
   const startBrowserShare = useCallback(async () => {
     setShareError(null);
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      setShareError('Bu brauzer ekran ulashishni qo‘llab-quvvatlamaydi. Chrome yoki Firefox tavsiya etiladi.');
+      setShareError(
+        'Bu mobil brauzer ekran ulashishni (getDisplayMedia) qo‘llab-quvvatlamaydi. 4-usul (Screen Stream over HTTP) yoki 3-usul (Simsiz ADB) dan foydalaning.',
+      );
+      setPcModalTab('android');
+      setPcModalOpen(true);
       return;
     }
     try {
@@ -307,42 +396,101 @@ export default function App() {
       video.playsInline = true;
       await video.play();
 
-      const srcW = video.videoWidth || (isMobile ? 720 : 1280);
-      const srcH = video.videoHeight || (isMobile ? 1280 : 720);
-      const maxDim = Math.max(srcW, srcH);
       const targetMax = isMobile ? 960 : 1280;
-      const scale = maxDim > targetMax ? targetMax / maxDim : 1;
-      const w = Math.max(240, Math.round(srcW * scale));
-      const h = Math.max(240, Math.round(srcH * scale));
+      const calcDims = () => {
+        const srcW = video.videoWidth || (isMobile ? 720 : 1280);
+        const srcH = video.videoHeight || (isMobile ? 1280 : 720);
+        const maxDim = Math.max(srcW, srcH);
+        const scale = maxDim > targetMax ? targetMax / maxDim : 1;
+        return {
+          w: Math.max(240, Math.round(srcW * scale)),
+          h: Math.max(240, Math.round(srcH * scale)),
+        };
+      };
 
+      const initialDims = calcDims();
       const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas.width = initialDims.w;
+      canvas.height = initialDims.h;
       const ctx = canvas.getContext('2d');
 
-      sendWs({
-        type: 'browser_agent:hello',
-        hostname: isAndroid ? 'Android Telefon' : isMobile ? 'Mobil Telefon' : 'Brauzer Ekran Ulashish',
-        osVersion: isAndroid ? 'Android 10+ (Chrome Cast)' : (navigator.platform || 'Browser'),
-        username: isAndroid ? 'Telefon' : 'PC',
-        screenWidth: w,
-        screenHeight: h,
-      });
+      const sessionId = `bs-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const hostname = isAndroid ? 'Android Telefon' : isMobile ? 'Mobil Telefon' : 'Brauzer Ekran Ulashish';
+      const osVersion = isAndroid ? 'Android 10+ (Chrome Cast)' : (navigator.platform || 'Browser');
+      const username = isAndroid ? 'Telefon' : 'PC';
+
+      shareSessionRef.current = {
+        sessionId,
+        hostname,
+        osVersion,
+        username,
+        screenWidth: initialDims.w,
+        screenHeight: initialDims.h,
+      };
+      browserSharingRef.current = true;
+      setBrowserSharing(true);
+
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'browser_agent:hello',
+          ...shareSessionRef.current,
+        }));
+      } else {
+        void fetch('/api/browser-share/hello', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(shareSessionRef.current),
+        }).catch(() => {});
+      }
 
       const sendFrame = () => {
         if (!ctx || video.readyState < 2) return;
         try {
-          ctx.drawImage(video, 0, 0, w, h);
+          const { w: curW, h: curH } = calcDims();
+          if (canvas.width !== curW || canvas.height !== curH) {
+            canvas.width = curW;
+            canvas.height = curH;
+            if (shareSessionRef.current) {
+              shareSessionRef.current.screenWidth = curW;
+              shareSessionRef.current.screenHeight = curH;
+            }
+          }
+          ctx.drawImage(video, 0, 0, curW, curH);
           const dataUrl = canvas.toDataURL('image/jpeg', isMobile ? 0.58 : 0.65);
           const base64 = dataUrl.split(',')[1] || '';
-          if (base64) {
-            sendWs({
+          if (!base64) return;
+
+          const socket = wsRef.current;
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
               type: 'browser_agent:frame',
+              sessionId,
               mimeType: 'image/jpeg',
-              width: w,
-              height: h,
+              width: curW,
+              height: curH,
               data: base64,
-            });
+            }));
+          } else if (!httpPostInFlightRef.current) {
+            httpPostInFlightRef.current = true;
+            void fetch('/api/browser-share/frame', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                sessionId,
+                hostname,
+                osVersion,
+                username,
+                mimeType: 'image/jpeg',
+                width: curW,
+                height: curH,
+                data: base64,
+              }),
+            })
+              .catch(() => {})
+              .finally(() => {
+                httpPostInFlightRef.current = false;
+              });
           }
         } catch {
           // ignore frame drawing error
@@ -351,7 +499,7 @@ export default function App() {
 
       sendFrame();
 
-      // Inline Blob Web Worker ensures frame ticks continue when user switches to Termux on mobile
+      // Inline Blob Web Worker ensures frame ticks continue when user switches apps on mobile
       try {
         const workerBlob = new Blob([
           `
@@ -370,6 +518,7 @@ export default function App() {
           `
         ], { type: 'application/javascript' });
         const workerUrl = URL.createObjectURL(workerBlob);
+        shareWorkerUrlRef.current = workerUrl;
         const worker = new Worker(workerUrl);
         worker.onmessage = (e) => {
           if (e.data === 'tick') {
@@ -382,8 +531,8 @@ export default function App() {
         shareTimerRef.current = setInterval(sendFrame, 320);
       }
 
-      setBrowserSharing(true);
       setPcModalOpen(false);
+      syncRealAgentFrame();
 
       const [track] = stream.getVideoTracks();
       if (track) {
@@ -394,8 +543,12 @@ export default function App() {
     } catch (err) {
       const msg = (err as Error).message || 'Ekran ulashish bekor qilindi';
       setShareError(msg);
+      if (/android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent)) {
+        setPcModalTab('android');
+        setPcModalOpen(true);
+      }
     }
-  }, [sendWs, stopBrowserShare]);
+  }, [stopBrowserShare, syncRealAgentFrame]);
 
   const switchTarget = async (next: ExecutionTarget) => {
     setExecutionTarget(next);
@@ -410,6 +563,9 @@ export default function App() {
   const showingRealPc =
     (executionTarget === 'real-win10' && hasRealDevice) ||
     (hasRealDevice && executionTarget !== 'linux');
+  activeDeviceIdRef.current = activeDeviceId;
+  showingRealPcRef.current = showingRealPc;
+  browserSharingRef.current = browserSharing;
 
   return (
     <div className="h-screen h-[100dvh] w-screen w-full flex flex-col bg-[#03060C] text-slate-100 overflow-hidden">
@@ -525,7 +681,14 @@ export default function App() {
             </button>
           )}
 
-          <button type="button" onClick={() => setPcModalOpen(true)} className={LIQUID_PILL_BTN}>
+          <button
+            type="button"
+            onClick={() => {
+              setPcModalTab('pc');
+              setPcModalOpen(true);
+            }}
+            className={LIQUID_PILL_BTN}
+          >
             {realAgentStatus.connected ? (
               <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10" aria-hidden="true" />
             ) : (
@@ -543,6 +706,32 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {shareError && !pcModalOpen && (
+        <div className="px-3 py-2 bg-rose-950/90 border-b border-rose-400/40 text-rose-100 text-xs flex flex-wrap items-center justify-between gap-2 shrink-0">
+          <span>{shareError}</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setPcModalTab('android');
+                setPcModalOpen(true);
+              }}
+              className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white font-medium"
+            >
+              Android usullarini ochish
+            </button>
+            <button
+              type="button"
+              onClick={() => setShareError(null)}
+              className="px-2 py-1 rounded-lg hover:bg-white/10 text-rose-200"
+              aria-label="Xatoni yopish"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       <main className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {splitView && connectedDevices.length >= 2 ? (
@@ -665,6 +854,8 @@ export default function App() {
 
       <PcConnectModal
         open={pcModalOpen}
+        initialTab={pcModalTab}
+        activeDeviceId={activeDeviceId}
         status={realAgentStatus}
         executionTarget={executionTarget}
         browserSharing={browserSharing}

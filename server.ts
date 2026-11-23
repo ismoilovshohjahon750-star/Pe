@@ -135,7 +135,44 @@ async function startServer() {
       frame: realWin10Bridge.getLatestFrame(deviceId),
       devices: realWin10Bridge.getDevices(),
       activeDeviceId: realWin10Bridge.getActiveDeviceId(),
+      frames: realWin10Bridge.getAllFrames(),
     });
+  });
+
+  app.post('/api/browser-share/hello', (req, res) => {
+    realWin10Bridge.startBrowserShare(null, (req.body || {}) as Record<string, unknown>);
+    res.json({ ok: true, activeDeviceId: realWin10Bridge.getActiveDeviceId() });
+  });
+
+  app.post('/api/browser-share/frame', (req, res) => {
+    realWin10Bridge.pushBrowserFrameHttp((req.body || {}) as Record<string, unknown>);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/browser-share/stop', (req, res) => {
+    const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId : undefined;
+    realWin10Bridge.stopBrowserShareHttp(sessionId);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/real-win10/stream-url', async (req, res) => {
+    const url = String(req.body?.url || '').trim();
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin.trim() : '';
+    const deviceId = typeof req.body?.deviceId === 'string' ? req.body.deviceId : undefined;
+    if (!url) {
+      res.status(400).json({ ok: false, error: 'Stream URL kiriting' });
+      return;
+    }
+    try {
+      const result = await realWin10Bridge.executeOnAgent(
+        'android_action',
+        { action: 'set_stream_url', url, ...(pin ? { pin } : {}) },
+        deviceId || 'android',
+      );
+      res.json({ ok: true, result });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+    }
   });
 
   app.get('/api/linux/status', (_req, res) => {
@@ -656,7 +693,7 @@ async function startServer() {
   const broadcastFrame = (payloadObj: Record<string, unknown>) => {
     const payload = JSON.stringify(payloadObj);
     for (const client of wss.clients) {
-      if (shouldSendToWsClient(client.readyState, client.bufferedAmount)) {
+      if (shouldSendToWsClient(client.readyState, client.bufferedAmount, 512 * 1024)) {
         client.send(payload);
       }
     }
@@ -690,7 +727,12 @@ async function startServer() {
   });
 
   realWin10Bridge.onDeviceFrame((deviceId, frame) => {
-    broadcastFrame({ type: 'real_agent_frame_for', deviceId, frame });
+    broadcastFrame({
+      type: 'real_agent_frame_for',
+      deviceId,
+      frame,
+      active: deviceId === realWin10Bridge.getActiveDeviceId(),
+    });
   });
 
   realWin10Bridge.onTarget((target) => {
@@ -752,6 +794,10 @@ async function startServer() {
     const lastFrame = realWin10Bridge.getLatestFrame();
     if (lastFrame) {
       ws.send(JSON.stringify({ type: 'real_agent_frame', frame: lastFrame }));
+    }
+    const allFrames = realWin10Bridge.getAllFrames();
+    for (const [dId, f] of Object.entries(allFrames)) {
+      ws.send(JSON.stringify({ type: 'real_agent_frame_for', deviceId: dId, frame: f }));
     }
     const lastLinuxFrame = realLinuxDesktop.getLatestFrame();
     if (lastLinuxFrame) {
@@ -929,7 +975,7 @@ async function startServer() {
     });
 
     ws.on('close', () => {
-      realWin10Bridge.stopBrowserShare(ws);
+      realWin10Bridge.handleBrowserSocketClosed(ws);
       desktopStore.setViewerCount(wss.clients.size);
     });
   });
