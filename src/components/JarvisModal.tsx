@@ -7,7 +7,6 @@ import {
   prepareTextForSpeech,
   stepVadState,
 } from '../utils/voiceSession';
-import { authFetch } from '../utils/siteAuthClient.ts';
 
 interface JarvisMessage {
   id: string;
@@ -230,7 +229,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
         typeof ReadableStream !== 'undefined' && typeof TextDecoder !== 'undefined';
 
       try {
-        const res = await authFetch('/api/jarvis/chat', {
+        const res = await fetch('/api/jarvis/chat', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -285,11 +284,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
               onToolActivity?.({ type: 'tool_done', tool: payload.tool });
             } else if (eventName === 'done') {
               finished = true;
-              finalReply =
-                payload.reply ||
-                ((payload.executedTools?.length || 0) > 0
-                  ? 'Bajarildi, Janob.'
-                  : 'Hech qanday tizim amali bajarilmadi, Janob.');
+              finalReply = payload.reply || 'Bajarildi, Janob.';
               onToolActivity?.({ type: 'done' });
               setMessages((prev) => [
                 ...prev,
@@ -362,11 +357,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
           return null;
         }
 
-        const replyText =
-          data.reply ||
-          ((data.executedTools?.length || 0) > 0
-            ? 'Bajarildi, Janob.'
-            : 'Hech qanday tizim amali bajarilmadi, Janob.');
+        const replyText = data.reply || 'Bajarildi, Janob.';
         finalReply = replyText;
         onToolActivity?.({ type: 'done' });
         setMessages((prev) => [
@@ -481,7 +472,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
       fetchAbortRef.current = controller;
 
       try {
-        const res = await authFetch('/api/jarvis/tts', {
+        const res = await fetch('/api/jarvis/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: cleanedSpeech }),
@@ -675,7 +666,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
                 return;
               }
 
-              const res = await authFetch('/api/jarvis/transcribe', {
+              const res = await fetch('/api/jarvis/transcribe', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ audioBase64: base64, mimeType: finalMimeType }),

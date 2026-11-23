@@ -1,5 +1,4 @@
 export type ExecutionTarget = 'linux' | 'sandbox' | 'real-win10';
-export type DeviceKind = 'pc' | 'android' | 'browser';
 
 export interface RealAgentStatus {
   connected: boolean;
@@ -13,21 +12,6 @@ export interface RealAgentStatus {
   fps: number;
 }
 
-export interface ConnectedDeviceSummary {
-  id: string;
-  kind: DeviceKind;
-  hostname: string;
-  osVersion: string;
-  username: string;
-  screenWidth: number;
-  screenHeight: number;
-  fps: number;
-  connectedAt: string;
-  lastFrameAt: number | null;
-  mode?: string;
-  active: boolean;
-}
-
 export interface RealAgentFrame {
   mimeType: string;
   width: number;
@@ -36,8 +20,6 @@ export interface RealAgentFrame {
   cursorX: number;
   cursorY: number;
   timestamp: number;
-  locked?: boolean;
-  lockServiceReady?: boolean;
 }
 
 export interface LinuxDesktopStatus {
@@ -99,8 +81,6 @@ export function resolveMcpExecutionMode(
     'file_read',
     'file_write',
     'file_delete',
-    'android_action',
-    'unlock_pc',
     'wait',
   ]);
 
@@ -205,76 +185,4 @@ export function pickNewerFrame(
   if (!current) return candidate;
   return candidate.timestamp >= current.timestamp ? candidate : current;
 }
-
-export function detectDeviceKind(
-  osVersion?: string | null,
-  hostname?: string | null,
-  isBrowserShare?: boolean,
-): DeviceKind {
-  if (isBrowserShare) return 'browser';
-  const combined = `${osVersion || ''} ${hostname || ''}`.toLowerCase();
-  if (combined.includes('android') || combined.includes('termux')) {
-    return 'android';
-  }
-  return 'pc';
-}
-
-export function resolveTargetDeviceIds(
-  devices: ConnectedDeviceSummary[],
-  selector?: string | null,
-  activeDeviceId?: string | null,
-): string[] {
-  if (devices.length === 0) return [];
-  const raw = String(selector || '').trim().toLowerCase();
-
-  if (!raw || raw === 'active' || raw === 'current') {
-    if (activeDeviceId && devices.some((d) => d.id === activeDeviceId)) {
-      return [activeDeviceId];
-    }
-    return [devices[0].id];
-  }
-
-  if (
-    raw === 'all' ||
-    raw === 'both' ||
-    raw === 'ikkala' ||
-    raw === 'ikkalasi' ||
-    raw === 'hammasi' ||
-    raw === '*'
-  ) {
-    return devices.map((d) => d.id);
-  }
-
-  const exact = devices.find((d) => d.id.toLowerCase() === raw);
-  if (exact) return [exact.id];
-
-  if (raw === 'android' || raw === 'phone' || raw === 'telefon' || raw === 'termux' || raw === 'mobile') {
-    const matches = devices
-      .filter(
-        (d) =>
-          d.kind === 'android' ||
-          `${d.hostname} ${d.osVersion}`.toLowerCase().includes('android') ||
-          `${d.hostname} ${d.osVersion}`.toLowerCase().includes('telefon'),
-      )
-      .map((d) => d.id);
-    if (matches.length > 0) return matches;
-  }
-
-  if (raw === 'pc' || raw === 'kompyuter' || raw === 'windows' || raw === 'win10' || raw === 'desktop' || raw === 'laptop') {
-    const matches = devices.filter((d) => d.kind === 'pc' || d.kind === 'browser').map((d) => d.id);
-    if (matches.length > 0) return matches;
-  }
-
-  const fuzzy = devices
-    .filter(
-      (d) =>
-        d.hostname.toLowerCase().includes(raw) ||
-        d.osVersion.toLowerCase().includes(raw),
-    )
-    .map((d) => d.id);
-  if (fuzzy.length > 0) return fuzzy;
-
-  return [];
-}
-
 

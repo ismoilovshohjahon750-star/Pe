@@ -1,5 +1,4 @@
 import {
-  FunctionCallingConfigMode,
   GoogleGenAI,
   ThinkingLevel,
   Type,
@@ -164,11 +163,6 @@ async function generateGeminiWithKeyRotation(params: {
   contents: Content[];
   systemInstruction: string;
   toolDeclarations?: FunctionDeclaration[];
-  toolConfig?: {
-    functionCallingConfig: {
-      mode: FunctionCallingConfigMode;
-    };
-  };
 }) {
   const models =
     Date.now() < primaryCooldownUntil
@@ -200,7 +194,6 @@ async function generateGeminiWithKeyRotation(params: {
             ...(params.toolDeclarations
               ? { tools: [{ functionDeclarations: params.toolDeclarations }] }
               : {}),
-            ...(params.toolConfig ? { toolConfig: params.toolConfig } : {}),
           },
         });
         sharedKeyPool.markModelHealthy('gemini', model, apiKey);
@@ -461,73 +454,10 @@ async function executeDesktopTool(
   return {
     responsePayload: {
       ok: !result?.isError,
-      output: textParts || (result?.isError ? 'Vosita xatolik bilan tugadi' : 'Completed'),
+      output: textParts || 'Completed',
     },
     images,
   };
-}
-
-export interface ToolOutcome {
-  name: string;
-  ok: boolean;
-  error?: string;
-}
-
-const ACTION_VERBS_REGEX =
-  /\b(och|ochib|ochgin|yop|yopib|bos|bosgin|yoz|yozib|yarat|yaratib|o['‘`]?chir|o['‘`]?chirib|ishga tushir|tushir|yoq|yoqib|ulan|ulab|ko['‘`]?rsat|ko['‘`]?r|tekshir|o['‘`]?qi|o['‘`]?qib|saqla|qidir|top|topib|skrinshot|screenshot|rasm ol|bajar|bajargin|qil|qilib|ko['‘`]?chir|o['‘`]?rnat|to['‘`]?xtat|aylantir|kir|kirit|yubor|chiz|hisobla|kompilyatsiya|yangila|run|start|open|close|click|tap|press|type|write|create|make|delete|remove|read|list|scroll|move|drag|navigate|launch|execute|install|check|find|search|show|turn|vibrate|enable|disable|send|kill|открой|закрой|нажми|запусти|создай|удали|напиши|проверь|покажи)\b/i;
-
-const ACTION_TARGET_REGEX =
-  /\b(terminal|powershell|bash|cmd|brauzer|browser|chrome|chromium|edge|youtube|google|kalkulyator|calculator|notepad|mousepad|explorer|fayl|file|papka|folder|ekran|screen|fonar|torch|chiroq|ovoz|volume|yorug['‘`]?lik|brightness|tebran|vibrate|kamera|camera|batareya|battery|wifi|bufer|clipboard|ilova|dastur|app|url|sayt|site|oyna|window|kod|code|skript|script|kompyuter|pc|telefon|android|linux)\b/i;
-
-const PURE_CHAT_REGEX =
-  /^(salom|assalomu alaykum|qalaysan|qandaysan|rahmat|tashakkur|kim|seni kim|nima qila olasan|isming nima|hello|hi|hey|who are you|who created|how are you|thanks|thank you)[!?\s.,]*$/i;
-
-const COMPLETED_CLAIM_REGEX =
-  /\b(bajarildi|bajarib bo['‘`]?ldim|bajardim|tayyor|ochildi|ochib berdim|ochdim|yozildi|yozdim|yaratildi|yaratdim|o['‘`]?chirildi|o['‘`]?chirdim|bosildi|bosdim|ishga tushirildi|ishga tushirdim|yoqildi|yoqdim|yopildi|yopdim|yuborildi|yubordim|hal qilindi|amalga oshirildi|done|completed|executed|opened|created|clicked|typed|launched|deleted|finished)\b/i;
-
-export function isLikelyActionRequest(message: string): boolean {
-  const clean = String(message || '').trim();
-  if (!clean) return false;
-  if (PURE_CHAT_REGEX.test(clean)) return false;
-  if (ACTION_VERBS_REGEX.test(clean)) return true;
-  if (ACTION_TARGET_REGEX.test(clean) && !/\b(nima|kim|qanday|necha|what|who|why|how)\b/i.test(clean)) {
-    return true;
-  }
-  return false;
-}
-
-export function looksLikeCompletedClaim(text: string): boolean {
-  const clean = String(text || '').trim();
-  if (!clean) return false;
-  return COMPLETED_CLAIM_REGEX.test(clean);
-}
-
-export function guardEmptyExecutionReply(
-  reply: string,
-  outcomes: ToolOutcome[],
-  userMessage: string,
-): string {
-  const cleanReply = String(reply || '').trim();
-
-  if (outcomes.length === 0) {
-    if (!cleanReply || looksLikeCompletedClaim(cleanReply) || isLikelyActionRequest(userMessage)) {
-      return 'Kechirasiz, Janob — birorta ham tizim vositasi (tool) ishga tushirilmadi, shuning uchun buyruq amalda bajarilmadi. Iltimos, qaysi qurilmada (Linux, PC yoki Android) qaysi amalni bajarishni aniqroq yozing.';
-    }
-    return cleanReply;
-  }
-
-  const allFailed = outcomes.every((o) => !o.ok);
-  if (allFailed) {
-    const errSummary = outcomes
-      .map((o) => `${o.name}: ${o.error || 'xatolik yuz berdi'}`)
-      .join('; ');
-    if (!cleanReply || looksLikeCompletedClaim(cleanReply)) {
-      return `Kechirasiz, Janob — buyruq bajarilmadi. Xatolik: ${errSummary}`;
-    }
-    return cleanReply;
-  }
-
-  return cleanReply || 'Buyruq bajarildi, Janob.';
 }
 
 export type JarvisStreamEvent =
@@ -545,7 +475,6 @@ export function buildJarvisSystemInstruction(screenInfo: string): string {
     'Veb-sahifadagi tugmalar/havolalar/oyna tugmalari uchun desktop_click(..., button: "left") ishlat; ish stoli yorliqlari (Desktop icons) uchun button: "double" yoki open_app ishlat. ' +
     'desktop_click bajarilgandan keyin yangilangan ekran rasmi qaytadi — tugma holati o‘zgarganini tekshir; o‘zgarmagan bo‘lsa aniqroq (x, y) ga yana bir marta bos, o‘zgargan bo‘lsa darhol hisobot ber. ' +
     'Agar vosita "Browser screen share supports viewing/desktop_screenshot only" xatosini qaytarsa, boshqa bosishga urinma va real-pc-agent.py ni ishga tushirish kerakligini tushuntir. ' +
-    'QAT\'IY QOIDA (MUHIM): Agar foydalanuvchi biron buyruq bersa (masalan, ilova ochish, terminalda buyruq yuborish, fayl o\'qish/yozish, sichqoncha bilan bosish), SEN HECH QACHON faqat og\'zaki ravishda "bajarildi" yoki "tayyor" deb javob berolmaysan. Haqiqiy amalni bajarish uchun har doim tegishli MCP vositasini (tool/function call) chaqirishing SHART. Vosita chaqirilmaguncha buyruq bajarilgan deb hisoblanmaydi. ' +
     'Ovozli muloqot va matn qoidasi: javoblaring foydalanuvchi tilida (odatda o‘zbek tilida), iloji boricha qisqa va lo‘nda (odatda 1-2 ta tabiiy gap), ovoz chiqarib o‘qishga qulay bo‘lsin; *, **, ` kabi markdown belgilarni ishlatma.'
   );
 }
@@ -688,7 +617,6 @@ async function runOpenAiProviderChat(
   const requestCompletion = async (
     msgs: Array<Record<string, unknown>>,
     includeTools: boolean,
-    toolChoice: 'auto' | 'required' = 'auto',
   ) => {
     let lastErr: unknown;
     for (const apiKey of keys) {
@@ -698,7 +626,7 @@ async function runOpenAiProviderChat(
           const res = await postOpenAiCompatible(provider, apiKey, '/chat/completions', {
             model,
             messages: msgs,
-            ...(includeTools ? { tools: openAiTools, tool_choice: toolChoice } : {}),
+            ...(includeTools ? { tools: openAiTools, tool_choice: 'auto' } : {}),
             max_tokens: 512,
           });
           const data = (await res.json()) as OpenAiChatResponse;
@@ -723,45 +651,14 @@ async function runOpenAiProviderChat(
     throw lastErr || Object.assign(new Error(`${provider} javob bermadi`), { status: 503 });
   };
 
-  const toolOutcomes: ToolOutcome[] = [];
-  let completion = await requestCompletion(messages, true, 'auto');
-
-  const firstMsg = completion.choices?.[0]?.message;
-  if (!firstMsg?.tool_calls || firstMsg.tool_calls.length === 0) {
-    const draftText = extractVisibleModelText(undefined, firstMsg?.content || '');
-    if (isLikelyActionRequest(params.message) || looksLikeCompletedClaim(draftText)) {
-      const retryMessages: Array<Record<string, unknown>> = [
-        ...messages,
-        { role: 'assistant', content: draftText || 'Bajaraman.' },
-        {
-          role: 'user',
-          content:
-            'DIQQAT: Siz hali birorta ham vosita (tool call) chaqirmadingiz. Og‘zaki "bajarildi" demang — hozirning o‘zida tegishli MCP vositasini chaqiring.',
-        },
-      ];
-      try {
-        const retried = await requestCompletion(retryMessages, true, 'required');
-        if (retried.choices?.[0]?.message?.tool_calls?.length) {
-          messages.splice(0, messages.length, ...retryMessages);
-          completion = retried;
-        }
-      } catch {
-        // Fall through to guardEmptyExecutionReply
-      }
-    }
-  }
+  let completion = await requestCompletion(messages, true);
 
   for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
     const assistantMsg = completion.choices?.[0]?.message;
     const toolCalls = assistantMsg?.tool_calls;
     if (!toolCalls || toolCalls.length === 0) {
-      const rawReply = extractJarvisReplyText(
-        undefined,
-        assistantMsg?.content || '',
-        params.executedTools.length > 0,
-      );
       return {
-        reply: guardEmptyExecutionReply(rawReply, toolOutcomes, params.message),
+        reply: extractJarvisReplyText(undefined, assistantMsg?.content || ''),
         executedTools: params.executedTools,
       };
     }
@@ -784,40 +681,27 @@ async function runOpenAiProviderChat(
       params.onEvent?.({ type: 'tool_start', tool: toolName });
       try {
         const execRes = await executeDesktopTool(toolName, parsedArgs, params.screenW, params.screenH);
-        const ok = Boolean(execRes.responsePayload.ok);
-        toolOutcomes.push({
-          name: toolName,
-          ok,
-          ...(ok ? {} : { error: execRes.responsePayload.output }),
-        });
-        params.onEvent?.({ type: 'tool_done', tool: toolName, ok });
+        params.onEvent?.({ type: 'tool_done', tool: toolName, ok: execRes.responsePayload.ok });
         messages.push({
           role: 'tool',
           tool_call_id: call.id,
           content: JSON.stringify(execRes.responsePayload),
         });
       } catch (err) {
-        const errMsg = (err as Error).message;
-        toolOutcomes.push({ name: toolName, ok: false, error: errMsg });
         params.onEvent?.({ type: 'tool_done', tool: toolName, ok: false });
         messages.push({
           role: 'tool',
           tool_call_id: call.id,
-          content: JSON.stringify({ ok: false, error: errMsg }),
+          content: JSON.stringify({ ok: false, error: (err as Error).message }),
         });
       }
     }
 
-    completion = await requestCompletion(messages, step < MAX_TOOL_STEPS - 1, 'auto');
+    completion = await requestCompletion(messages, step < MAX_TOOL_STEPS - 1);
   }
 
-  const finalRawReply = extractJarvisReplyText(
-    undefined,
-    completion.choices?.[0]?.message?.content || '',
-    params.executedTools.length > 0,
-  );
   return {
-    reply: guardEmptyExecutionReply(finalRawReply, toolOutcomes, params.message),
+    reply: extractJarvisReplyText(undefined, completion.choices?.[0]?.message?.content || ''),
     executedTools: params.executedTools,
   };
 }
@@ -848,25 +732,14 @@ export async function runJarvisChat(
   const contents = buildGeminiContents(history, message, activeFrame);
 
   const executedTools: string[] = [];
-  const devices = realWin10Bridge.getDevices();
-  const activeDevId = realWin10Bridge.getActiveDeviceId();
   const screenW =
     target === 'real-win10' && realStatus.connected ? realStatus.screenWidth || 1280 : 1280;
   const screenH =
     target === 'real-win10' && realStatus.connected ? realStatus.screenHeight || 720 : 720;
-  const devicesDesc =
-    devices.length > 0
-      ? devices
-          .map(
-            (d) =>
-              `- [id: ${d.id}] ${d.kind.toUpperCase()} (${d.hostname}, OS: ${d.osVersion}, size: ${d.screenWidth}x${d.screenHeight}, active: ${d.active})`,
-          )
-          .join('\n')
-      : 'Hozircha qo‘shimcha tashqi qurilma ulanmagan.';
   const screenInfo =
     target === 'real-win10' && realStatus.connected
-      ? `Ulangan qurilmalar (Jami: ${devices.length}, Faol: ${activeDevId || 'none'}):\n${devicesDesc}\nSiz barcha qo'shilgan qurilmalarni bir vaqtning o'zida yoki alohida boshqara olasiz (device: "android", device: "pc", device: "all").`
-      : `Debian GNU/Linux 12 X11 desktop (${screenW}x${screenH}, DISPLAY=:99, root). Shuningdek tashqi PC yoki Android Termux telefonlarni bir vaqtda ulashingiz mumkin.`;
+      ? `Haqiqiy PC (${realStatus.hostname}, ${screenW}x${screenH})`
+      : `Debian GNU/Linux 12 X11 desktop (${screenW}x${screenH}, DISPLAY=:99, root)`;
 
   const systemInstruction = buildJarvisSystemInstruction(screenInfo);
 
@@ -874,49 +747,11 @@ export async function runJarvisChat(
 
   if (getOrderedKeysForAttempt('gemini').length > 0) {
     try {
-      const toolOutcomes: ToolOutcome[] = [];
       let response = await generateGeminiWithKeyRotation({
         contents,
         systemInstruction,
         toolDeclarations,
       });
-
-      if (!response.functionCalls || response.functionCalls.length === 0) {
-        const draftText = extractVisibleModelText(
-          response.candidates?.[0]?.content?.parts as Array<{ text?: string; thought?: boolean }> | undefined,
-          response.text,
-        );
-        if (isLikelyActionRequest(message) || looksLikeCompletedClaim(draftText)) {
-          const retryContents: Content[] = [
-            ...contents,
-            { role: 'model', parts: [{ text: draftText || 'Tushundim.' }] },
-            {
-              role: 'user',
-              parts: [
-                {
-                  text: 'DIQQAT: Siz hali birorta ham tool/function call chaqirmadingiz! Faqat matn bilan "bajarildi" demang. Hozirning o‘zida tegishli MCP vositasini chaqiring.',
-                },
-              ],
-            },
-          ];
-          try {
-            const retried = await generateGeminiWithKeyRotation({
-              contents: retryContents,
-              systemInstruction,
-              toolDeclarations,
-              toolConfig: {
-                functionCallingConfig: { mode: FunctionCallingConfigMode.ANY },
-              },
-            });
-            if (retried.functionCalls && retried.functionCalls.length > 0) {
-              contents.splice(0, contents.length, ...retryContents);
-              response = retried;
-            }
-          } catch {
-            // If forced tool mode isn't supported on a fallback model, guardEmptyExecutionReply protects below
-          }
-        }
-      }
 
       for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
         const calls = response.functionCalls;
@@ -935,13 +770,7 @@ export async function runJarvisChat(
           onEvent?.({ type: 'tool_start', tool: toolName });
           try {
             const execRes = await executeDesktopTool(toolName, toolArgs, screenW, screenH);
-            const ok = Boolean(execRes.responsePayload.ok);
-            toolOutcomes.push({
-              name: toolName,
-              ok,
-              ...(ok ? {} : { error: execRes.responsePayload.output }),
-            });
-            onEvent?.({ type: 'tool_done', tool: toolName, ok });
+            onEvent?.({ type: 'tool_done', tool: toolName, ok: execRes.responsePayload.ok });
             responseParts.push({
               functionResponse: {
                 ...(call.id ? { id: call.id } : {}),
@@ -958,14 +787,12 @@ export async function runJarvisChat(
               });
             }
           } catch (err) {
-            const errMsg = (err as Error).message;
-            toolOutcomes.push({ name: toolName, ok: false, error: errMsg });
             onEvent?.({ type: 'tool_done', tool: toolName, ok: false });
             responseParts.push({
               functionResponse: {
                 ...(call.id ? { id: call.id } : {}),
                 name: toolName,
-                response: { ok: false, error: errMsg },
+                response: { ok: false, error: (err as Error).message },
               },
             });
           }
@@ -979,14 +806,13 @@ export async function runJarvisChat(
         });
       }
 
-      const rawReply = extractJarvisReplyText(
+      const reply = extractJarvisReplyText(
         response.candidates?.[0]?.content?.parts as Array<{ text?: string; thought?: boolean }> | undefined,
         response.text,
-        executedTools.length > 0,
       );
 
       return {
-        reply: guardEmptyExecutionReply(rawReply, toolOutcomes, message),
+        reply,
         executedTools,
       };
     } catch (err) {
@@ -1009,7 +835,7 @@ export async function runJarvisChat(
         toolDeclarations,
         screenW,
         screenH,
-        executedTools: [],
+        executedTools,
         onEvent,
       });
     } catch (err) {
@@ -1047,11 +873,8 @@ function extractVisibleModelText(
 export function extractJarvisReplyText(
   parts?: Array<{ text?: string; thought?: boolean }>,
   fallbackText?: string,
-  hasExecutedTools = true,
 ): string {
-  const visible = extractVisibleModelText(parts, fallbackText);
-  if (visible) return visible;
-  return hasExecutedTools ? 'Buyruq bajarildi.' : '';
+  return extractVisibleModelText(parts, fallbackText) || 'Buyruq bajarildi.';
 }
 
 export function normalizeAudioMimeType(mimeType?: string): string {

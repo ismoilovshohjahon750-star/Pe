@@ -60,11 +60,8 @@ export function resolveKeyboardLockedPortrait(
   boxHeight: number,
   keyboardFocused: boolean,
   previousPortrait: boolean,
-  screenWidth: number = 1280,
-  screenHeight: number = 720,
 ): boolean {
   if (!allowRotate) return false;
-  if (screenHeight > screenWidth) return false;
   if (keyboardFocused) return previousPortrait;
   return boxWidth > 0 && boxHeight > boxWidth;
 }

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Check, Copy, Plug, Shield, Terminal, X } from 'lucide-react';
 import { copyTextCrossBrowser } from '../utils/clipboard.ts';
-import { authFetch } from '../utils/siteAuthClient.ts';
 import {
   LIQUID_CARD,
   LIQUID_ICON_BTN,
@@ -36,10 +35,9 @@ export function McpConnectModal({ open, onClose }: McpConnectModalProps) {
 
   useEffect(() => {
     if (!open) return;
-    authFetch('/api/mcp-info')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data: { authEnabled: boolean; token: string | null; tools: McpToolItem[] } | null) => {
-        if (!data) return;
+    fetch('/api/mcp-info')
+      .then((r) => r.json())
+      .then((data: { authEnabled: boolean; token: string | null; tools: McpToolItem[] }) => {
         setAuthEnabled(data.authEnabled);
         setToken(data.token);
         setTools(data.tools || []);
@@ -77,7 +75,7 @@ export function McpConnectModal({ open, onClose }: McpConnectModalProps) {
   };
 
   const toggleAuth = async () => {
-    const res = await authFetch('/api/mcp-auth', {
+    const res = await fetch('/api/mcp-auth', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: !authEnabled }),

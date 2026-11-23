@@ -8,7 +8,6 @@ import {
   LIQUID_MODAL_SHELL,
   LIQUID_PILL_BTN,
 } from './liquidGlass';
-import { authFetch } from '../utils/siteAuthClient.ts';
 
 interface SettingsModalProps {
   open: boolean;
@@ -25,10 +24,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   useEffect(() => {
     if (open) {
       setMessage(null);
-      authFetch('/api/settings/keys')
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data: { geminiKeys?: string[]; groqKeys?: string[]; openRouterKeys?: string[] } | null) => {
-          if (!data) return;
+      fetch('/api/settings/keys')
+        .then((res) => res.json())
+        .then((data: { geminiKeys?: string[]; groqKeys?: string[]; openRouterKeys?: string[] }) => {
           setGeminiText((data.geminiKeys || []).join('\n'));
           setGroqText((data.groqKeys || []).join('\n'));
           setOpenRouterText((data.openRouterKeys || []).join('\n'));
@@ -51,7 +49,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         .filter((k) => k.length >= 8 && !k.startsWith('MY_') && !k.startsWith('YOUR_'));
 
     try {
-      const res = await authFetch('/api/settings/keys', {
+      const res = await fetch('/api/settings/keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

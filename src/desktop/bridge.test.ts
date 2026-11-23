@@ -4,14 +4,11 @@ import {
   buildNonInteractiveAptInstallCmd,
   createInitialLinuxStatus,
   createInitialRealAgentStatus,
-  detectDeviceKind,
   mapClientPointToScreen,
   pickNewerFrame,
   resolveMcpExecutionMode,
-  resolveTargetDeviceIds,
   shouldBroadcastFrame,
   shouldSendToWsClient,
-  type ConnectedDeviceSummary,
 } from './bridge.ts';
 
 test('initial real agent and linux statuses start cleanly', () => {
@@ -27,7 +24,6 @@ test('initial real agent and linux statuses start cleanly', () => {
 test('resolveMcpExecutionMode routes tools to linux, real-win10, or sandbox accurately', () => {
   assert.equal(resolveMcpExecutionMode('real-win10', false, true, 'desktop_screenshot'), 'sandbox');
   assert.equal(resolveMcpExecutionMode('real-win10', true, true, 'desktop_screenshot'), 'real-win10');
-  assert.equal(resolveMcpExecutionMode('real-win10', true, true, 'android_action'), 'real-win10');
   assert.equal(resolveMcpExecutionMode('linux', false, true, 'desktop_screenshot'), 'linux');
   assert.equal(resolveMcpExecutionMode('linux', false, true, 'open_app'), 'linux');
   assert.equal(resolveMcpExecutionMode('linux', false, true, 'window_control'), 'linux');
@@ -117,53 +113,3 @@ test('pickNewerFrame keeps monotonic newest frame timestamp', () => {
   assert.equal(pickNewerFrame(f2, f1), f2);
   assert.equal(pickNewerFrame(f1, f2), f2);
 });
-
-test('detectDeviceKind distinguishes android, browser share, and desktop pc', () => {
-  assert.equal(detectDeviceKind('Android 14 (Termux)', 'Pixel 8', false), 'android');
-  assert.equal(detectDeviceKind('Microsoft Windows 10 Pro', 'DESKTOP-1', false), 'pc');
-  assert.equal(detectDeviceKind('Windows', 'Browser Display', true), 'browser');
-});
-
-test('resolveTargetDeviceIds targets active, specific kind, hostname, or all connected devices', () => {
-  const devices: ConnectedDeviceSummary[] = [
-    {
-      id: 'dev-pc',
-      kind: 'pc',
-      hostname: 'SHOH-PC',
-      osVersion: 'Windows 10 Pro',
-      username: 'shoh',
-      screenWidth: 1920,
-      screenHeight: 1080,
-      fps: 5,
-      connectedAt: '2026-11-22T00:00:00.000Z',
-      lastFrameAt: 1000,
-      active: true,
-    },
-    {
-      id: 'dev-android',
-      kind: 'android',
-      hostname: 'Redmi Note 13',
-      osVersion: 'Android 14 (Termux)',
-      username: 'u0_a123',
-      screenWidth: 540,
-      screenHeight: 960,
-      fps: 2,
-      connectedAt: '2026-11-22T00:00:01.000Z',
-      lastFrameAt: 2000,
-      active: false,
-    },
-  ];
-
-  assert.deepEqual(resolveTargetDeviceIds(devices, undefined, 'dev-pc'), ['dev-pc']);
-  assert.deepEqual(resolveTargetDeviceIds(devices, 'active', 'dev-android'), ['dev-android']);
-  assert.deepEqual(resolveTargetDeviceIds(devices, 'android', 'dev-pc'), ['dev-android']);
-  assert.deepEqual(resolveTargetDeviceIds(devices, 'telefon', 'dev-pc'), ['dev-android']);
-  assert.deepEqual(resolveTargetDeviceIds(devices, 'pc', 'dev-android'), ['dev-pc']);
-  assert.deepEqual(resolveTargetDeviceIds(devices, 'redmi', 'dev-pc'), ['dev-android']);
-  assert.deepEqual(resolveTargetDeviceIds(devices, 'dev-android', 'dev-pc'), ['dev-android']);
-  assert.deepEqual(resolveTargetDeviceIds(devices, 'all', 'dev-pc'), ['dev-pc', 'dev-android']);
-  assert.deepEqual(resolveTargetDeviceIds(devices, 'ikkala', 'dev-pc'), ['dev-pc', 'dev-android']);
-  assert.deepEqual(resolveTargetDeviceIds(devices, 'missing-id', 'dev-pc'), []);
-  assert.deepEqual(resolveTargetDeviceIds([], 'all', null), []);
-});
-

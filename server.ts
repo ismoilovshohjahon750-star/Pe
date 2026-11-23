@@ -18,7 +18,6 @@ import {
 import { realLinuxDesktop } from './src/server/realLinuxDesktop.ts';
 import { realWin10Bridge } from './src/server/realWin10Bridge.ts';
 import { renderDesktopPngBase64 } from './src/server/screenshot.ts';
-import { buildAndroidTermuxAgent } from './src/server/androidTermuxAgent.ts';
 import {
   buildCSharpPcAgentSource,
   buildExeBuilderBatchScript,
@@ -33,16 +32,6 @@ import {
   type JarvisChatMessage,
 } from './src/server/jarvis.ts';
 import { getSettingsKeys, saveSettingsKeys } from './src/server/settingsManager.ts';
-import {
-  checkUnlockRateLimit,
-  clearUnlockFailures,
-  extractBearerToken,
-  issueSiteSessionToken,
-  recordUnlockFailure,
-  revokeSiteSessionToken,
-  verifySitePin,
-  verifySiteSessionToken,
-} from './src/server/siteAuth.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -51,37 +40,12 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '16mb' }));
 
-  // CORS & cache headers: open CORS strictly on external MCP/agent endpoints, same-origin on authenticated UI APIs
+  // CORS & cache headers for MCP + cross-browser REST compatibility
   app.use((req, res, next) => {
-    const isExternalEndpoint =
-      req.path === '/mcp' ||
-      req.path === '/sse' ||
-      req.path === '/messages' ||
-      req.path === '/api/real-win10-agent.ps1' ||
-      req.path === '/api/real-pc-agent.py' ||
-      req.path === '/api/android-termux-agent.py' ||
-      req.path === '/api/real-pc-agent.cs' ||
-      req.path === '/api/real-pc-agent-builder.bat';
-
-    if (isExternalEndpoint) {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
-      res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
-    } else if (req.headers.origin) {
-      try {
-        const originHost = new URL(req.headers.origin).host;
-        const reqHost = req.headers['x-forwarded-host'] || req.headers.host;
-        if (originHost && reqHost && originHost === String(reqHost).split(',')[0].trim()) {
-          res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
-          res.setHeader('Vary', 'Origin');
-          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-        }
-      } catch {
-        // ignore invalid Origin header
-      }
-    }
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
     if (req.path.startsWith('/api/')) {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
@@ -91,53 +55,6 @@ async function startServer() {
       return;
     }
     next();
-  });
-
-  const requireSiteAuth: express.RequestHandler = (req, res, next) => {
-    const token = extractBearerToken(req.headers.authorization);
-    if (!verifySiteSessionToken(token)) {
-      res.status(401).json({ ok: false, error: 'Avval kirish parolini tasdiqlang.' });
-      return;
-    }
-    next();
-  };
-
-  app.get('/api/auth/session', (req, res) => {
-    const token = extractBearerToken(req.headers.authorization);
-    res.json({ authenticated: verifySiteSessionToken(token) });
-  });
-
-  app.post('/api/auth/unlock', (req, res) => {
-    const clientKey = String(req.headers['x-forwarded-for'] || req.ip || 'local')
-      .split(',')[0]
-      .trim();
-    const limit = checkUnlockRateLimit(clientKey);
-    if (!limit.allowed) {
-      res.status(429).json({
-        ok: false,
-        error: `Juda ko‘p noto‘g‘ri urinish. ${limit.retryAfterSec} soniyadan keyin qayta urinib ko‘ring.`,
-      });
-      return;
-    }
-
-    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
-    if (!verifySitePin(pin)) {
-      recordUnlockFailure(clientKey);
-      res.status(401).json({ ok: false, error: 'Parol noto‘g‘ri. Qaytadan urinib ko‘ring.' });
-      return;
-    }
-
-    clearUnlockFailures(clientKey);
-    const session = issueSiteSessionToken();
-    res.json({ ok: true, token: session.token, expiresAt: session.expiresAt });
-  });
-
-  app.post('/api/auth/lock', (req, res) => {
-    const token = extractBearerToken(req.headers.authorization);
-    if (token) {
-      revokeSiteSessionToken(token);
-    }
-    res.json({ ok: true });
   });
 
   // --- Model Context Protocol (MCP) Endpoints ---
@@ -157,12 +74,12 @@ async function startServer() {
     void handleLegacySsePost(req, res);
   });
 
-  // --- Desktop & Filesystem REST APIs (Protected by Site PIN Session) ---
-  app.get('/api/state', requireSiteAuth, (_req, res) => {
+  // --- Desktop & Filesystem REST APIs ---
+  app.get('/api/state', (_req, res) => {
     res.json(desktopStore.getState());
   });
 
-  app.get('/api/mcp-info', requireSiteAuth, (_req, res) => {
+  app.get('/api/mcp-info', (_req, res) => {
     const state = desktopStore.getState();
     res.json({
       serverName: 'claude-linux-desktop-mcp',
@@ -173,17 +90,15 @@ async function startServer() {
     });
   });
 
-  app.get('/api/real-win10/status', requireSiteAuth, (_req, res) => {
+  app.get('/api/real-win10/status', (_req, res) => {
     res.json({
       target: realWin10Bridge.getExecutionTarget(),
       agent: realWin10Bridge.getStatus(),
-      devices: realWin10Bridge.getDevices(),
-      activeDeviceId: realWin10Bridge.getActiveDeviceId(),
       linux: realLinuxDesktop.getStatus(),
     });
   });
 
-  app.post('/api/real-win10/target', requireSiteAuth, (req, res) => {
+  app.post('/api/real-win10/target', (req, res) => {
     const raw = req.body?.target;
     const target: ExecutionTarget =
       raw === 'real-win10' ? 'real-win10' : raw === 'linux' ? 'linux' : 'sandbox';
@@ -191,92 +106,34 @@ async function startServer() {
     res.json({ target: updated });
   });
 
-  app.get('/api/real-win10/devices', requireSiteAuth, (_req, res) => {
-    res.json({
-      devices: realWin10Bridge.getDevices(),
-      activeDeviceId: realWin10Bridge.getActiveDeviceId(),
-      frames: realWin10Bridge.getAllFrames(),
-    });
-  });
-
-  app.post('/api/real-win10/active-device', requireSiteAuth, (req, res) => {
-    const deviceId = String(req.body?.deviceId || '');
-    const summary = realWin10Bridge.setActiveDevice(deviceId);
-    if (!summary) {
-      res.status(404).json({ ok: false, error: 'Device not found' });
-      return;
-    }
-    res.json({ ok: true, activeDevice: summary });
-  });
-
-  app.get('/api/real-win10/frame', requireSiteAuth, (_req, res) => {
-    const deviceId = typeof _req.query.deviceId === 'string' ? _req.query.deviceId : undefined;
+  app.get('/api/real-win10/frame', (_req, res) => {
     res.json({
       target: realWin10Bridge.getExecutionTarget(),
-      status: realWin10Bridge.getStatus(deviceId),
-      frame: realWin10Bridge.getLatestFrame(deviceId),
-      devices: realWin10Bridge.getDevices(),
-      activeDeviceId: realWin10Bridge.getActiveDeviceId(),
-      frames: realWin10Bridge.getAllFrames(),
+      status: realWin10Bridge.getStatus(),
+      frame: realWin10Bridge.getLatestFrame(),
     });
   });
 
-  app.post('/api/browser-share/hello', requireSiteAuth, (req, res) => {
-    realWin10Bridge.startBrowserShare(null, (req.body || {}) as Record<string, unknown>);
-    res.json({ ok: true, activeDeviceId: realWin10Bridge.getActiveDeviceId() });
-  });
-
-  app.post('/api/browser-share/frame', requireSiteAuth, (req, res) => {
-    realWin10Bridge.pushBrowserFrameHttp((req.body || {}) as Record<string, unknown>);
-    res.json({ ok: true });
-  });
-
-  app.post('/api/browser-share/stop', requireSiteAuth, (req, res) => {
-    const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId : undefined;
-    realWin10Bridge.stopBrowserShareHttp(sessionId);
-    res.json({ ok: true });
-  });
-
-  app.post('/api/real-win10/stream-url', requireSiteAuth, async (req, res) => {
-    const url = String(req.body?.url || '').trim();
-    const pin = typeof req.body?.pin === 'string' ? req.body.pin.trim() : '';
-    const deviceId = typeof req.body?.deviceId === 'string' ? req.body.deviceId : undefined;
-    if (!url) {
-      res.status(400).json({ ok: false, error: 'Stream URL kiriting' });
-      return;
-    }
-    try {
-      const result = await realWin10Bridge.executeOnAgent(
-        'android_action',
-        { action: 'set_stream_url', url, ...(pin ? { pin } : {}) },
-        deviceId || 'android',
-      );
-      res.json({ ok: true, result });
-    } catch (err) {
-      res.status(400).json({ ok: false, error: (err as Error).message });
-    }
-  });
-
-  app.get('/api/linux/status', requireSiteAuth, (_req, res) => {
+  app.get('/api/linux/status', (_req, res) => {
     res.json({
       status: realLinuxDesktop.getStatus(),
       frame: realLinuxDesktop.getLatestFrame(),
     });
   });
 
-  app.get('/api/linux/frame', requireSiteAuth, (_req, res) => {
+  app.get('/api/linux/frame', (_req, res) => {
     res.json({
       status: realLinuxDesktop.getStatus(),
       frame: realLinuxDesktop.getLatestFrame(),
     });
   });
 
-  app.post('/api/linux/restart', requireSiteAuth, async (_req, res) => {
+  app.post('/api/linux/restart', async (_req, res) => {
     const status = await realLinuxDesktop.restart();
     res.json({ status });
   });
 
-  app.post('/api/desktop/input', requireSiteAuth, async (req, res) => {
+  app.post('/api/desktop/input', async (req, res) => {
     try {
       const msg = (req.body || {}) as { type?: string; [k: string]: unknown };
       switch (msg.type) {
@@ -334,22 +191,6 @@ async function startServer() {
             });
           }
           break;
-        case 'user:real_unlock':
-          if (realWin10Bridge.getDevices().length > 0) {
-            const unlockRes = await realWin10Bridge.executeOnAgent(
-              'unlock_pc',
-              {
-                pin: String(msg.pin ?? ''),
-                wake: msg.wake === undefined ? true : Boolean(msg.wake),
-                sas: Boolean(msg.sas),
-              },
-              typeof msg.deviceId === 'string' ? msg.deviceId : undefined,
-            );
-            res.json({ ok: true, result: unlockRes });
-            return;
-          }
-          res.status(400).json({ ok: false, error: 'Real PC ulangan emas.' });
-          return;
         default:
           res.status(400).json({ ok: false, error: 'Unsupported input action' });
           return;
@@ -390,21 +231,6 @@ async function startServer() {
     res.send(script);
   });
 
-  app.get('/api/android-termux-agent.py', (req, res) => {
-    const fwdProto = String(req.headers['x-forwarded-proto'] || '')
-      .split(',')[0]
-      .trim()
-      .toLowerCase();
-    const proto = fwdProto === 'https' || req.protocol === 'https' ? 'wss' : 'ws';
-    const host = req.headers.host || `localhost:${PORT}`;
-    const state = desktopStore.getState();
-    const token = state.authEnabled ? desktopStore.getAuthToken() : null;
-    const script = buildAndroidTermuxAgent(`${proto}://${host}/agent-ws`, token);
-    res.setHeader('Content-Type', 'text/x-python; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="android-termux-agent.py"');
-    res.send(script);
-  });
-
   app.get('/api/real-pc-agent.cs', (req, res) => {
     const fwdProto = String(req.headers['x-forwarded-proto'] || '')
       .split(',')[0]
@@ -433,7 +259,7 @@ async function startServer() {
     res.send(bat);
   });
 
-  app.post('/api/mcp-auth', requireSiteAuth, (req, res) => {
+  app.post('/api/mcp-auth', (req, res) => {
     const enabled = Boolean(req.body?.enabled);
     const updated = desktopStore.setAuthEnabled(enabled);
     res.json({
@@ -442,7 +268,7 @@ async function startServer() {
     });
   });
 
-  app.post('/api/jarvis/chat', requireSiteAuth, async (req, res) => {
+  app.post('/api/jarvis/chat', async (req, res) => {
     const wantsStream =
       req.body?.stream === true ||
       String(req.headers.accept || '').includes('text/event-stream');
@@ -496,7 +322,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/jarvis/transcribe', requireSiteAuth, async (req, res) => {
+  app.post('/api/jarvis/transcribe', async (req, res) => {
     try {
       const audioBase64 = String(req.body?.audioBase64 || '');
       const mimeType = String(req.body?.mimeType || 'audio/webm');
@@ -512,7 +338,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/jarvis/tts', requireSiteAuth, async (req, res) => {
+  app.post('/api/jarvis/tts', async (req, res) => {
     try {
       const text = String(req.body?.text || '').trim();
       if (!text) {
@@ -527,7 +353,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/settings/keys', requireSiteAuth, (_req, res) => {
+  app.get('/api/settings/keys', (_req, res) => {
     try {
       const keys = getSettingsKeys();
       res.json(keys);
@@ -536,7 +362,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/settings/keys', requireSiteAuth, (req, res) => {
+  app.post('/api/settings/keys', (req, res) => {
     try {
       const geminiKeys = Array.isArray(req.body?.geminiKeys) ? req.body.geminiKeys : undefined;
       const groqKeys = Array.isArray(req.body?.groqKeys) ? req.body.groqKeys : undefined;
@@ -548,7 +374,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/screenshot.png', requireSiteAuth, (_req, res) => {
+  app.get('/api/screenshot.png', (_req, res) => {
     const base64 = renderDesktopPngBase64(desktopStore.getState());
     const buf = Buffer.from(base64, 'base64');
     res.setHeader('Content-Type', 'image/png');
@@ -556,7 +382,7 @@ async function startServer() {
     res.send(buf);
   });
 
-  app.get('/api/fs/list', requireSiteAuth, (req, res) => {
+  app.get('/api/fs/list', (req, res) => {
     try {
       const winPath = typeof req.query.path === 'string' ? req.query.path : 'C:\\Users\\Claude\\Desktop';
       res.json(desktopStore.fsList(winPath));
@@ -565,7 +391,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/fs/read', requireSiteAuth, (req, res) => {
+  app.get('/api/fs/read', (req, res) => {
     try {
       const winPath = String(req.query.path || '');
       res.json(desktopStore.fsRead(winPath));
@@ -574,7 +400,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/fs/write', requireSiteAuth, (req, res) => {
+  app.post('/api/fs/write', (req, res) => {
     try {
       const winPath = String(req.body?.path || '');
       const content = String(req.body?.content ?? '');
@@ -584,7 +410,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/fs/mkdir', requireSiteAuth, (req, res) => {
+  app.post('/api/fs/mkdir', (req, res) => {
     try {
       const winPath = String(req.body?.path || '');
       res.json(makeWinDir(winPath));
@@ -593,7 +419,7 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/fs/delete', requireSiteAuth, (req, res) => {
+  app.delete('/api/fs/delete', (req, res) => {
     try {
       const winPath = String(req.query.path || req.body?.path || '');
       res.json(desktopStore.fsDelete(winPath));
@@ -603,7 +429,7 @@ async function startServer() {
   });
 
   // Live MCP end-to-end demonstration (executes genuine JSON-RPC MCP tool calls)
-  app.post('/api/demo-mcp', requireSiteAuth, async (_req, res) => {
+  app.post('/api/demo-mcp', async (_req, res) => {
     res.json({ started: true });
     const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
     try {
@@ -745,14 +571,6 @@ async function startServer() {
   server.on('upgrade', (request, socket, head) => {
     const urlPath = (request.url || '/').split('?')[0];
     if (urlPath === '/ws') {
-      const parsed = new URL(request.url || '/', 'http://localhost');
-      const token =
-        parsed.searchParams.get('token') || extractBearerToken(request.headers.authorization);
-      if (!verifySiteSessionToken(token)) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
-      }
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
       });
@@ -799,7 +617,7 @@ async function startServer() {
   const broadcastFrame = (payloadObj: Record<string, unknown>) => {
     const payload = JSON.stringify(payloadObj);
     for (const client of wss.clients) {
-      if (shouldSendToWsClient(client.readyState, client.bufferedAmount, 512 * 1024)) {
+      if (shouldSendToWsClient(client.readyState, client.bufferedAmount)) {
         client.send(payload);
       }
     }
@@ -824,21 +642,8 @@ async function startServer() {
     broadcastAll({ type: 'real_agent_status', status });
   });
 
-  realWin10Bridge.onDevices((devices, activeDeviceId) => {
-    broadcastAll({ type: 'real_devices', devices, activeDeviceId });
-  });
-
   realWin10Bridge.onFrame((frame) => {
     broadcastFrame({ type: 'real_agent_frame', frame });
-  });
-
-  realWin10Bridge.onDeviceFrame((deviceId, frame) => {
-    broadcastFrame({
-      type: 'real_agent_frame_for',
-      deviceId,
-      frame,
-      active: deviceId === realWin10Bridge.getActiveDeviceId(),
-    });
   });
 
   realWin10Bridge.onTarget((target) => {
@@ -880,13 +685,6 @@ async function startServer() {
     );
     ws.send(
       JSON.stringify({
-        type: 'real_devices',
-        devices: realWin10Bridge.getDevices(),
-        activeDeviceId: realWin10Bridge.getActiveDeviceId(),
-      }),
-    );
-    ws.send(
-      JSON.stringify({
         type: 'linux_status',
         status: realLinuxDesktop.getStatus(),
       }),
@@ -900,10 +698,6 @@ async function startServer() {
     const lastFrame = realWin10Bridge.getLatestFrame();
     if (lastFrame) {
       ws.send(JSON.stringify({ type: 'real_agent_frame', frame: lastFrame }));
-    }
-    const allFrames = realWin10Bridge.getAllFrames();
-    for (const [dId, f] of Object.entries(allFrames)) {
-      ws.send(JSON.stringify({ type: 'real_agent_frame_for', deviceId: dId, frame: f }));
     }
     const lastLinuxFrame = realLinuxDesktop.getLatestFrame();
     if (lastLinuxFrame) {
@@ -1002,65 +796,37 @@ async function startServer() {
               );
               break;
             case 'user:real_click':
-              if (realWin10Bridge.getDevices().length > 0) {
-                try {
-                  await realWin10Bridge.executeOnAgent('desktop_click', {
-                    x: Number(msg.x ?? 0),
-                    y: Number(msg.y ?? 0),
-                    button: msg.button === 'right' || msg.button === 'double' ? msg.button : 'left',
-                  }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
-                } catch (err) {
-                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: (err as Error).message }));
-                }
+              if (realWin10Bridge.getStatus().connected) {
+                await realWin10Bridge.executeOnAgent('desktop_click', {
+                  x: Number(msg.x ?? 0),
+                  y: Number(msg.y ?? 0),
+                  button: msg.button === 'right' || msg.button === 'double' ? msg.button : 'left',
+                });
               }
               break;
             case 'user:real_type':
-              if (realWin10Bridge.getDevices().length > 0) {
-                try {
-                  await realWin10Bridge.executeOnAgent('desktop_type', {
-                    text: String(msg.text ?? ''),
-                    enter: Boolean(msg.enter),
-                  }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
-                } catch (err) {
-                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: (err as Error).message }));
-                }
+              if (realWin10Bridge.getStatus().connected) {
+                await realWin10Bridge.executeOnAgent('desktop_type', {
+                  text: String(msg.text ?? ''),
+                  enter: Boolean(msg.enter),
+                });
               }
               break;
             case 'user:real_scroll':
-              if (realWin10Bridge.getDevices().length > 0) {
+              if (realWin10Bridge.getStatus().connected) {
                 await realWin10Bridge.executeOnAgent('desktop_scroll', {
                   x: Number(msg.x ?? 640),
                   y: Number(msg.y ?? 360),
                   direction: Number(msg.deltaY ?? 0) > 0 ? 'down' : 'up',
                   clicks: 3,
-                }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
+                });
               }
               break;
             case 'user:real_key':
-              if (realWin10Bridge.getDevices().length > 0) {
-                try {
-                  await realWin10Bridge.executeOnAgent('desktop_key', {
-                    key: String(msg.key ?? 'Enter'),
-                  }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
-                } catch (err) {
-                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: (err as Error).message }));
-                }
-              }
-              break;
-            case 'user:real_unlock':
-              if (realWin10Bridge.getDevices().length > 0) {
-                try {
-                  const data = await realWin10Bridge.executeOnAgent('unlock_pc', {
-                    pin: String(msg.pin ?? ''),
-                    wake: msg.wake === undefined ? true : Boolean(msg.wake),
-                    sas: Boolean(msg.sas),
-                  }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
-                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: true, message: typeof data === 'string' ? data : 'OK' }));
-                } catch (err) {
-                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: (err as Error).message }));
-                }
-              } else {
-                ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: 'PC agenti ulangan emas.' }));
+              if (realWin10Bridge.getStatus().connected) {
+                await realWin10Bridge.executeOnAgent('desktop_key', {
+                  key: String(msg.key ?? 'Enter'),
+                });
               }
               break;
             case 'user:linux_move':
@@ -1109,7 +875,7 @@ async function startServer() {
     });
 
     ws.on('close', () => {
-      realWin10Bridge.handleBrowserSocketClosed(ws);
+      realWin10Bridge.stopBrowserShare(ws);
       desktopStore.setViewerCount(wss.clients.size);
     });
   });
