@@ -259,7 +259,12 @@ def check_root_available() -> bool:
         DEVICE_INFO["has_root"] = False
         return False
     try:
-        proc = subprocess.run(["su", "-c", "id"], capture_output=True, text=True, timeout=2.5)
+        proc = subprocess.run(
+            ["su", "-c", "id && (command -v input || test -x /system/bin/input)"],
+            capture_output=True,
+            text=True,
+            timeout=2.5,
+        )
         DEVICE_INFO["has_root"] = proc.returncode == 0 and "uid=0" in (proc.stdout or "")
     except Exception:
         DEVICE_INFO["has_root"] = False
@@ -874,29 +879,48 @@ def fetch_local_http_stream() -> bytes | None:
 def run_android_input(cmd_args: list[str]) -> str:
     quoted = " ".join(shlex.quote(a) for a in cmd_args)
     if has_adb_device():
-        subprocess.run(["adb", "shell", quoted], capture_output=True, text=True, timeout=5.0)
+        proc = subprocess.run(["adb", "shell", quoted], capture_output=True, text=True, timeout=5.0)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            raise RuntimeError(f"ADB input xatoligi: {err}")
         return "ADB: " + " ".join(cmd_args)
     if check_root_available():
-        subprocess.run(["su", "-c", quoted], capture_output=True, text=True, timeout=5.0)
+        proc = subprocess.run(["su", "-c", quoted], capture_output=True, text=True, timeout=5.0)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            raise RuntimeError(f"Root input xatoligi: {err}")
         return "ROOT: " + " ".join(cmd_args)
     raise RuntimeError("No ADB/Root display input")
 
 
 def open_android_url(url: str) -> str:
     if shutil.which("termux-open-url"):
-        subprocess.Popen(["termux-open-url", url])
-        return f"Opened URL via termux-open-url: {url}"
+        proc = subprocess.run(["termux-open-url", url], capture_output=True, text=True, timeout=6.0)
+        if proc.returncode == 0:
+            return f"Opened URL via termux-open-url: {url}"
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"termux-open-url xatoligi: {err or proc.returncode}")
     if has_adb_device():
-        subprocess.run(
+        proc = subprocess.run(
             ["adb", "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url],
             capture_output=True,
+            text=True,
             timeout=5.0,
         )
-        return f"Opened URL via ADB: {url}"
+        if proc.returncode == 0:
+            return f"Opened URL via ADB: {url}"
+        raise RuntimeError((proc.stderr or proc.stdout or "ADB URL launch failed").strip())
     if shutil.which("am"):
-        subprocess.Popen(["am", "start", "-a", "android.intent.action.VIEW", "-d", url])
-        return f"Opened URL via am start: {url}"
-    return f"URL recorded (install termux-tools/termux-api to launch Chrome): {url}"
+        proc = subprocess.run(
+            ["am", "start", "-a", "android.intent.action.VIEW", "-d", url],
+            capture_output=True,
+            text=True,
+            timeout=6.0,
+        )
+        if proc.returncode == 0:
+            return f"Opened URL via am start: {url}"
+        raise RuntimeError((proc.stderr or proc.stdout or "am start failed").strip())
+    raise RuntimeError(f"URL ochib bo'lmadi ({url}): Termux da 'pkg install -y termux-tools' o'rnating yoki ADB ulang.")
 
 
 def resolve_path(raw_path: str | None) -> Path:
@@ -1121,44 +1145,43 @@ def perform_android_action(args: dict) -> str:
 def handle_deck_click(x: int, y: int) -> str:
     for bx1, by1, bx2, by2, label, action_id in DECK_BUTTONS:
         if bx1 <= x <= bx2 and by1 <= y <= by2:
-            try:
-                if action_id == "torch_toggle":
-                    return perform_android_action({"action": "torch"})
-                if action_id == "vibrate":
-                    return perform_android_action({"action": "vibrate", "durationMs": 350})
-                if action_id == "battery":
-                    return perform_android_action({"action": "battery"})
-                if action_id == "vol_down":
-                    return perform_android_action({"action": "volume", "value": "down"})
-                if action_id == "vol_up":
-                    return perform_android_action({"action": "volume", "value": "up"})
-                if action_id == "toast":
-                    return perform_android_action({"action": "toast", "text": "Salom Janob! J.A.R.V.I.S."})
-                if action_id == "bright_down":
-                    return perform_android_action({"action": "brightness", "value": "down"})
-                if action_id == "bright_up":
-                    return perform_android_action({"action": "brightness", "value": "up"})
-                if action_id == "clipboard":
-                    return perform_android_action({"action": "clipboard_get"})
-                if action_id == "chrome":
-                    return open_android_url("https://google.com")
-                if action_id == "youtube":
-                    return open_android_url("https://youtube.com")
-                if action_id == "wifi":
-                    return perform_android_action({"action": "wifi"})
-            except Exception as exc:
-                err_msg = str(exc)
-                add_term_output(f"[ERR] {err_msg}")
-                return err_msg
+            if action_id == "torch_toggle":
+                return perform_android_action({"action": "torch"})
+            if action_id == "vibrate":
+                return perform_android_action({"action": "vibrate", "durationMs": 350})
+            if action_id == "battery":
+                return perform_android_action({"action": "battery"})
+            if action_id == "vol_down":
+                return perform_android_action({"action": "volume", "value": "down"})
+            if action_id == "vol_up":
+                return perform_android_action({"action": "volume", "value": "up"})
+            if action_id == "toast":
+                return perform_android_action({"action": "toast", "text": "Salom Janob! J.A.R.V.I.S."})
+            if action_id == "bright_down":
+                return perform_android_action({"action": "brightness", "value": "down"})
+            if action_id == "bright_up":
+                return perform_android_action({"action": "brightness", "value": "up"})
+            if action_id == "clipboard":
+                return perform_android_action({"action": "clipboard_get"})
+            if action_id == "chrome":
+                return open_android_url("https://google.com")
+            if action_id == "youtube":
+                return open_android_url("https://youtube.com")
+            if action_id == "wifi":
+                return perform_android_action({"action": "wifi"})
 
     if y >= 446:
         add_term_output("[SHELL FOCUS] Ready to type command")
         return "Focused Termux interactive shell"
 
-    return f"Deck tap at ({x}, {y})"
+    raise RuntimeError(f"Termux boshqaruv panelida ({x}, {y}) nuqtada tugma topilmadi; aniq tugmani bosing yoki android_action ishlating.")
 
 
 def run_tool(tool: str, args: dict):
+    has_x11 = bool(os.environ.get("DISPLAY") and shutil.which("xdotool"))
+    has_input = has_adb_device() or check_root_available()
+    is_http_stream = DEVICE_INFO.get("screen_mode") == "HTTP-STREAM"
+
     if tool == "desktop_screenshot":
         return {
             "width": DEVICE_INFO["screen_w"],
@@ -1173,20 +1196,18 @@ def run_tool(tool: str, args: dict):
         return perform_android_action(args)
 
     if tool == "desktop_move":
-        return f"Android cursor moved to ({args.get('x', 0)}, {args.get('y', 0)})"
+        if not is_http_stream and has_x11:
+            x = int(args.get("x", 0))
+            y = int(args.get("y", 0))
+            subprocess.run(["xdotool", "mousemove", str(x), str(y)], timeout=4.0)
+            return f"X11 cursor moved to ({x}, {y})"
+        raise RuntimeError("Telefon ekranida kursor harakati uchun ADB/Root yoki X11 talab qilinadi.")
 
     if tool == "desktop_click":
         x = int(args.get("x", 0))
         y = int(args.get("y", 0))
         btn = str(args.get("button", "left"))
-        if os.environ.get("DISPLAY") and shutil.which("xdotool"):
-            bnum = "3" if btn == "right" else "1"
-            cmd = ["xdotool", "mousemove", str(x), str(y), "click"]
-            cmd += ["--repeat", "2", bnum] if btn == "double" else [bnum]
-            subprocess.run(cmd, timeout=4.0)
-            add_log(f"X11 CLICK {btn} ({x},{y})")
-            return f"X11 clicked {btn} at ({x}, {y})"
-        if has_adb_device() or check_root_available():
+        if has_input:
             if btn == "right":
                 out = run_android_input(["input", "swipe", str(x), str(y), str(x), str(y), "650"])
             elif btn == "double":
@@ -1196,18 +1217,29 @@ def run_tool(tool: str, args: dict):
                 out = run_android_input(["input", "tap", str(x), str(y)])
             add_log(f"TAP {btn} ({x},{y})")
             return out
+        if is_http_stream:
+            raise RuntimeError("Telefon ekraniga bosish (tap) uchun ADB yoki Root ruxsati kerak. Screen Stream over HTTP faqat ko'rish rejimi; buyruqlar uchun run_bash yoki telefon funksiyalari uchun android_action ishlating.")
+        if has_x11:
+            bnum = "3" if btn == "right" else "1"
+            cmd = ["xdotool", "mousemove", str(x), str(y), "click"]
+            cmd += ["--repeat", "2", bnum] if btn == "double" else [bnum]
+            subprocess.run(cmd, timeout=4.0)
+            add_log(f"X11 CLICK {btn} ({x},{y})")
+            return f"X11 clicked {btn} at ({x}, {y})"
         return handle_deck_click(x, y)
 
     if tool == "desktop_scroll":
         x = int(args.get("x", DEVICE_INFO["screen_w"] // 2))
         y = int(args.get("y", DEVICE_INFO["screen_h"] // 2))
         direction = str(args.get("direction", "down"))
-        if has_adb_device() or check_root_available():
+        if has_input:
             dy = 320 if direction == "up" else -320
             y2 = max(20, min(DEVICE_INFO["screen_h"] - 20, y + dy))
             out = run_android_input(["input", "swipe", str(x), str(y), str(x), str(y2), "220"])
             add_log(f"SWIPE {direction}")
             return out
+        if is_http_stream:
+            raise RuntimeError("Telefon ekranini aylantirish (scroll/swipe) uchun ADB yoki Root talab qilinadi.")
         if direction == "up":
             TERMINAL_STATE["scroll"] = min(max(0, len(TERM_LINES) - 15), int(TERMINAL_STATE["scroll"]) + 3)
         else:
@@ -1217,14 +1249,7 @@ def run_tool(tool: str, args: dict):
     if tool == "desktop_type":
         text = str(args.get("text", ""))
         enter = bool(args.get("enter"))
-        if os.environ.get("DISPLAY") and shutil.which("xdotool"):
-            if text:
-                subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "10", "--", text], timeout=8.0)
-            if enter:
-                subprocess.run(["xdotool", "key", "Return"], timeout=4.0)
-            add_log(f"X11 TYPE {len(text)}c")
-            return f"Typed {len(text)} chars (X11)"
-        if has_adb_device() or check_root_available():
+        if has_input:
             if text:
                 escaped = text.replace(" ", "%s")
                 run_android_input(["input", "text", escaped])
@@ -1232,6 +1257,15 @@ def run_tool(tool: str, args: dict):
                 run_android_input(["input", "keyevent", "66"])
             add_log(f"TYPE {len(text)}c")
             return f"Typed {len(text)} chars on Android"
+        if is_http_stream:
+            raise RuntimeError("Telefon ilovalariga to'g'ridan-to'g'ri matn yozish uchun ADB yoki Root kerak; Termux buyrug'i uchun run_bash ishlating.")
+        if has_x11:
+            if text:
+                subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "10", "--", text], timeout=8.0)
+            if enter:
+                subprocess.run(["xdotool", "key", "Return"], timeout=4.0)
+            add_log(f"X11 TYPE {len(text)}c")
+            return f"Typed {len(text)} chars (X11)"
         if text:
             TERMINAL_STATE["cmd"] += text
         if enter:
@@ -1242,11 +1276,7 @@ def run_tool(tool: str, args: dict):
 
     if tool == "desktop_key":
         key = str(args.get("key", "Enter"))
-        if os.environ.get("DISPLAY") and shutil.which("xdotool"):
-            subprocess.run(["xdotool", "key", key], timeout=4.0)
-            add_log(f"X11 KEY {key}")
-            return f"Sent X11 key {key}"
-        if has_adb_device() or check_root_available():
+        if has_input:
             key_map = {
                 "Enter": "66", "Return": "66", "Backspace": "67", "BackSpace": "67",
                 "Tab": "61", "Escape": "4", "Back": "4", "Home": "3", "Win": "3",
@@ -1258,6 +1288,12 @@ def run_tool(tool: str, args: dict):
             out = run_android_input(["input", "keyevent", code])
             add_log(f"KEY {key}")
             return out
+        if is_http_stream:
+            raise RuntimeError(f"Telefon tugmasini ({key}) bosish uchun ADB yoki Root ruxsati talab qilinadi.")
+        if has_x11:
+            subprocess.run(["xdotool", "key", key], timeout=4.0)
+            add_log(f"X11 KEY {key}")
+            return f"Sent X11 key {key}"
         if key in ("Enter", "Return"):
             cmd_to_run = TERMINAL_STATE["cmd"]
             TERMINAL_STATE["cmd"] = ""
@@ -1269,7 +1305,7 @@ def run_tool(tool: str, args: dict):
             TERMINAL_STATE["cmd"] = ""
             add_term_output("^C")
             return "Cleared shell buffer"
-        return f"Key {key} handled in Termux shell"
+        raise RuntimeError(f"Termux rejimida '{key}' tugmasi qo'llab-quvvatlanmaydi (ADB/Root kerak).")
 
     if tool == "browser_navigate":
         url = str(args.get("url") or "https://google.com")
@@ -1278,7 +1314,7 @@ def run_tool(tool: str, args: dict):
         return open_android_url(url)
 
     if tool == "open_app":
-        app = str(args.get("app", "")).lower()
+        app = str(args.get("app", "")).lower().strip()
         if args.get("command"):
             subprocess.Popen(["bash", "-lc", str(args["command"])])
             add_log(f"RUN {str(args['command'])[:24]}")
@@ -1286,11 +1322,14 @@ def run_tool(tool: str, args: dict):
             return f"Started {args['command']}"
         if app in ("chrome", "chromium", "edge", "browser"):
             return open_android_url(str(args.get("url") or "https://google.com"))
+        if app in ("termux", "terminal", "bash", "shell"):
+            add_term_output("[TERMUX] Shell active")
+            return "Termux shell active"
         pkg_map = {
             "youtube": "com.google.android.youtube",
             "settings": "com.android.settings",
             "calculator": "com.google.android.calculator",
-            "calc": "com.google.android.calculator",
+            "calc": "com.android.calculator",
             "camera": "com.android.camera",
             "files": "com.android.documentsui",
             "explorer": "com.android.documentsui",
@@ -1299,15 +1338,24 @@ def run_tool(tool: str, args: dict):
         pkg = pkg_map.get(app)
         if pkg:
             if has_adb_device():
-                subprocess.run(["adb", "shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"], capture_output=True, timeout=5.0)
+                proc = subprocess.run(
+                    ["adb", "shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5.0,
+                )
+                if proc.returncode != 0:
+                    raise RuntimeError((proc.stderr or proc.stdout or f"Failed to launch {pkg}").strip())
             elif shutil.which("monkey"):
                 subprocess.Popen(["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
+            elif app == "youtube":
+                return open_android_url("https://youtube.com")
             else:
-                return open_android_url("https://youtube.com" if app == "youtube" else "https://google.com")
+                raise RuntimeError(f"Android ilovasini ({pkg}) ochish uchun ADB ulanishi yoki monkey kerak.")
             add_log(f"APP {app}")
             add_term_output(f"[APP] {pkg}")
             return f"Launched {pkg}"
-        return f"Termux shell ready for: {app or 'bash'}"
+        raise RuntimeError(f"Android da '{app}' ilovasini ochib bo'lmadi: paket nomi noma'lum. 'command' yoki run_bash / android_action ishlating.")
 
     if tool in ("run_bash", "run_powershell"):
         cmd = str(args.get("command", ""))

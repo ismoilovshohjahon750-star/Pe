@@ -32,6 +32,12 @@ namespace JarvisPcAgent
         [DllImport("user32.dll")]
         public static extern bool SetProcessDPIAware();
 
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool CloseDesktop(IntPtr hDesktop);
+
         public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         public const uint MOUSEEVENTF_LEFTUP = 0x0004;
         public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
@@ -382,6 +388,32 @@ namespace JarvisPcAgent
             return sb.ToString();
         }
 
+        private static bool IsWorkstationLocked()
+        {
+            try
+            {
+                IntPtr hDesk = NativeWin32.OpenInputDesktop(0, false, 0x0001);
+                if (hDesk == IntPtr.Zero)
+                {
+                    return true;
+                }
+                NativeWin32.CloseDesktop(hDesk);
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void EnsureGuiInputUnlocked()
+        {
+            if (IsWorkstationLocked())
+            {
+                throw new InvalidOperationException("Kompyuter qulflangan (Win+L). Qulf ochilmaguncha sichqoncha va klaviatura buyruqlari bajarilmaydi; fonda run_powershell, run_bash va file_* vositalaridan foydalaning.");
+            }
+        }
+
         private static object ExecuteTool(string tool, Dictionary<string, object> args, JavaScriptSerializer json)
         {
             if (tool == "desktop_screenshot")
@@ -390,12 +422,14 @@ namespace JarvisPcAgent
                 Dictionary<string, object> res = new Dictionary<string, object>();
                 res["width"] = bounds.Width;
                 res["height"] = bounds.Height;
+                res["locked"] = IsWorkstationLocked();
                 res["note"] = "Captured live real Windows PC frame (.exe)";
                 return res;
             }
 
             if (tool == "desktop_move")
             {
+                EnsureGuiInputUnlocked();
                 int x = GetInt(args, "x", 0);
                 int y = GetInt(args, "y", 0);
                 NativeWin32.SetCursorPos(x, y);
@@ -404,6 +438,7 @@ namespace JarvisPcAgent
 
             if (tool == "desktop_click")
             {
+                EnsureGuiInputUnlocked();
                 int x = GetInt(args, "x", 0);
                 int y = GetInt(args, "y", 0);
                 string btn = GetStr(args, "button", "left");
@@ -432,6 +467,7 @@ namespace JarvisPcAgent
 
             if (tool == "desktop_scroll")
             {
+                EnsureGuiInputUnlocked();
                 int x = GetInt(args, "x", 640);
                 int y = GetInt(args, "y", 360);
                 int clicks = GetInt(args, "clicks", 3);
@@ -444,6 +480,7 @@ namespace JarvisPcAgent
 
             if (tool == "desktop_type")
             {
+                EnsureGuiInputUnlocked();
                 string txt = GetStr(args, "text", "");
                 SendKeys.SendWait(EscapeSendKeys(txt));
                 if (GetBool(args, "enter"))
@@ -455,6 +492,7 @@ namespace JarvisPcAgent
 
             if (tool == "desktop_key")
             {
+                EnsureGuiInputUnlocked();
                 string k = GetStr(args, "key", "Enter");
                 string mapped = k;
                 if (k == "Enter" || k == "Return") mapped = "{ENTER}";

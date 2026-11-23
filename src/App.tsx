@@ -42,6 +42,7 @@ export default function App() {
   const shareWorkerUrlRef = useRef<string | null>(null);
   const browserSharingRef = useRef(false);
   const httpPostInFlightRef = useRef(false);
+  const userWantsLinuxRef = useRef(false);
   const shareSessionRef = useRef<{
     sessionId: string;
     hostname: string;
@@ -199,7 +200,7 @@ export default function App() {
             } else if (msg.type === 'real_agent_status' && msg.status) {
               const st = msg.status as RealAgentStatus;
               setRealAgentStatus(st);
-              if (st.connected) {
+              if (st.connected && !userWantsLinuxRef.current) {
                 setExecutionTarget('real-win10');
               }
             } else if (msg.type === 'real_devices') {
@@ -208,7 +209,9 @@ export default function App() {
               if (devList) {
                 setConnectedDevices(devList);
                 if (devList.length > 0) {
-                  setExecutionTarget('real-win10');
+                  if (!userWantsLinuxRef.current) {
+                    setExecutionTarget('real-win10');
+                  }
                   if (!activeDeviceIdRef.current && !actId) {
                     setActiveDeviceId(devList[0].id);
                   }
@@ -218,7 +221,9 @@ export default function App() {
             } else if (msg.type === 'real_agent_frame' && msg.frame) {
               lastWsFrameAtRef.current = Date.now();
               setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
-              setExecutionTarget('real-win10');
+              if (!userWantsLinuxRef.current) {
+                setExecutionTarget('real-win10');
+              }
             } else if (msg.type === 'real_agent_frame_for') {
               const dId = msg.deviceId;
               const f = msg.frame;
@@ -231,9 +236,16 @@ export default function App() {
                 if (msg.active || !activeDeviceIdRef.current || activeDeviceIdRef.current === dId) {
                   setRealAgentFrame((prev) => pickNewerFrame(prev, f));
                 }
-                setExecutionTarget('real-win10');
+                if (!userWantsLinuxRef.current) {
+                  setExecutionTarget('real-win10');
+                }
               }
             } else if (msg.type === 'execution_target' && msg.target) {
+              if (msg.target === 'linux') {
+                userWantsLinuxRef.current = true;
+              } else {
+                userWantsLinuxRef.current = false;
+              }
               setExecutionTarget(msg.target);
             }
           } catch {
@@ -428,6 +440,7 @@ export default function App() {
         screenHeight: initialDims.h,
       };
       browserSharingRef.current = true;
+      userWantsLinuxRef.current = false;
       setBrowserSharing(true);
 
       const ws = wsRef.current;
@@ -551,6 +564,11 @@ export default function App() {
   }, [stopBrowserShare, syncRealAgentFrame]);
 
   const switchTarget = async (next: ExecutionTarget) => {
+    if (next === 'linux') {
+      userWantsLinuxRef.current = true;
+    } else {
+      userWantsLinuxRef.current = false;
+    }
     setExecutionTarget(next);
     await fetch('/api/real-win10/target', {
       method: 'POST',

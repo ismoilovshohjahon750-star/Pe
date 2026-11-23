@@ -284,7 +284,11 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
               onToolActivity?.({ type: 'tool_done', tool: payload.tool });
             } else if (eventName === 'done') {
               finished = true;
-              finalReply = payload.reply || 'Bajarildi, Janob.';
+              finalReply =
+                payload.reply ||
+                ((payload.executedTools?.length || 0) > 0
+                  ? 'Bajarildi, Janob.'
+                  : 'Hech qanday tizim amali bajarilmadi, Janob.');
               onToolActivity?.({ type: 'done' });
               setMessages((prev) => [
                 ...prev,
@@ -357,7 +361,11 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
           return null;
         }
 
-        const replyText = data.reply || 'Bajarildi, Janob.';
+        const replyText =
+          data.reply ||
+          ((data.executedTools?.length || 0) > 0
+            ? 'Bajarildi, Janob.'
+            : 'Hech qanday tizim amali bajarilmadi, Janob.');
         finalReply = replyText;
         onToolActivity?.({ type: 'done' });
         setMessages((prev) => [

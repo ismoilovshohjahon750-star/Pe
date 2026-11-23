@@ -45,7 +45,33 @@ def render_locked_frame() -> tuple[int, int, bytes]:
     return w, h, buf.getvalue()
 
 
+_screen_locked = False
+
+
+def is_workstation_locked() -> bool:
+    if os.name == "nt":
+        try:
+            import ctypes
+            u32 = ctypes.windll.user32
+            h = u32.OpenInputDesktop(0, False, 0x0001)
+            if not h:
+                return True
+            u32.CloseDesktop(h)
+            return False
+        except Exception:
+            pass
+    return _screen_locked
+
+
+def ensure_gui_unlocked():
+    if is_workstation_locked():
+        raise RuntimeError(
+            "Kompyuter qulflangan (Win+L). Qulf ochilmaguncha sichqoncha va klaviatura buyruqlari bajarilmaydi; fonda run_powershell, run_bash va file_* dan foydalaning."
+        )
+
+
 def capture_frame_payload() -> dict:
+    global _screen_locked
     try:
         with mss.mss() as sct:
             monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
@@ -54,6 +80,7 @@ def capture_frame_payload() -> dict:
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=55)
             b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            _screen_locked = False
             try:
                 cx, cy = pyautogui.position()
             except Exception:
@@ -69,6 +96,7 @@ def capture_frame_payload() -> dict:
                 "timestamp": int(time.time() * 1000),
             }
     except Exception:
+        _screen_locked = True
         w, h, jpg = render_locked_frame()
         return {
             "type": "agent:frame",
@@ -88,13 +116,15 @@ def run_tool(tool: str, args: dict):
             w, h = pyautogui.size()
         except Exception:
             w, h = 960, 540
-        return {"width": w, "height": h, "note": "Captured live real PC frame"}
+        return {"width": w, "height": h, "locked": is_workstation_locked(), "note": "Captured live real PC frame"}
 
     if tool == "desktop_move":
+        ensure_gui_unlocked()
         pyautogui.moveTo(int(args.get("x", 0)), int(args.get("y", 0)))
         return f"Moved cursor to ({args.get('x', 0)}, {args.get('y', 0)})"
 
     if tool == "desktop_click":
+        ensure_gui_unlocked()
         x = int(args.get("x", 0))
         y = int(args.get("y", 0))
         btn = str(args.get("button", "left"))
@@ -107,6 +137,7 @@ def run_tool(tool: str, args: dict):
         return f"Clicked {btn} at ({x}, {y})"
 
     if tool == "desktop_scroll":
+        ensure_gui_unlocked()
         x = int(args.get("x", 640))
         y = int(args.get("y", 360))
         clicks = int(args.get("clicks", 3))
@@ -116,6 +147,7 @@ def run_tool(tool: str, args: dict):
         return f"Scrolled {direction} at ({x}, {y})"
 
     if tool == "desktop_type":
+        ensure_gui_unlocked()
         text = str(args.get("text", ""))
         pyautogui.write(text, interval=0.01)
         if args.get("enter"):
@@ -123,6 +155,7 @@ def run_tool(tool: str, args: dict):
         return f"Typed {len(text)} chars"
 
     if tool == "desktop_key":
+        ensure_gui_unlocked()
         key = str(args.get("key", "enter"))
         key_map = {
             "Enter": "enter",

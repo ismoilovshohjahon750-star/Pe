@@ -92,6 +92,14 @@ with socketserver.TCPServer(("127.0.0.1", 0), MockStreamHandler) as srv:
     assert got["width"] == 720 and got["height"] == 1600
     assert got["mimeType"] == "image/jpeg"
 
+    # In HTTP-STREAM mode without ADB/Root, GUI tap must fail explicitly rather than fake ok:True
+    click_failed = False
+    try:
+        mod.run_tool("desktop_click", {"x": 200, "y": 400, "button": "left"})
+    except RuntimeError:
+        click_failed = True
+    assert click_failed, "Expected RuntimeError for desktop_click in HTTP-STREAM mode without ADB/Root"
+
 print("OK")
 `;
     fs.writeFileSync(testScriptPath, pyTestCode, 'utf8');
