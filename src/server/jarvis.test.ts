@@ -7,6 +7,9 @@ import {
   buildJarvisToolDeclarations,
   extractJarvisReplyText,
   formatGeminiError,
+  guardEmptyExecutionReply,
+  isLikelyActionRequest,
+  looksLikeCompletedClaim,
   normalizeAudioMimeType,
   pruneOldScreenshots,
   scaleNormalizedPoint,
@@ -29,6 +32,11 @@ test('J.A.R.V.I.S. exposes every MCP tool with matching schema declarations', ()
   assert.ok(jarvisNames.includes('run_bash'));
   assert.ok(jarvisNames.includes('file_write'));
   assert.ok(jarvisNames.includes('wait'));
+
+  for (const toolName of ['desktop_screenshot', 'desktop_click', 'open_app', 'run_bash']) {
+    const decl = jarvisTools.find((t) => t.name === toolName);
+    assert.ok(decl?.parameters?.properties?.device, `Expected "device" param on ${toolName}`);
+  }
 });
 
 test('buildGeminiContents normalizes alternating turns and avoids duplicating current user message', () => {
@@ -113,3 +121,49 @@ test('normalizeAudioMimeType strips codecs parameters cleanly', () => {
   assert.equal(normalizeAudioMimeType('AUDIO/MP4; codecs=mp4a.40.2'), 'audio/mp4');
   assert.equal(normalizeAudioMimeType(''), 'audio/webm');
 });
+
+test('isLikelyActionRequest and looksLikeCompletedClaim accurately detect commands and false claims', () => {
+  assert.equal(isLikelyActionRequest('Terminalni och va ls yoz'), true);
+  assert.equal(isLikelyActionRequest('Telefonda fonarni yoq'), true);
+  assert.equal(isLikelyActionRequest('Salom'), false);
+  assert.equal(isLikelyActionRequest('Seni kim yaratgan?'), false);
+
+  assert.equal(looksLikeCompletedClaim('Bajarildi, Janob!'), true);
+  assert.equal(looksLikeCompletedClaim('Terminal muvaffaqiyatli ochildi.'), true);
+  assert.equal(looksLikeCompletedClaim('Salom, Janob. Sizga qanday yordam beray?'), false);
+});
+
+test('guardEmptyExecutionReply prevents hallucinated Bajarildi when no tools ran or all tools failed', () => {
+  const blockedZeroTools = guardEmptyExecutionReply('Bajarildi, Janob!', [], 'Chrome och');
+  assert.ok(!blockedZeroTools.includes('Bajarildi, Janob'));
+  assert.ok(blockedZeroTools.includes('bajarilmadi'));
+
+  const blockedAllFailed = guardEmptyExecutionReply(
+    'Bajarildi, Janob.',
+    [{ name: 'desktop_click', ok: false, error: 'Kompyuter qulflangan (Win+L)' }],
+    'tugmani bos',
+  );
+  assert.ok(blockedAllFailed.includes('bajarilmadi'));
+  assert.ok(blockedAllFailed.includes('Win+L'));
+
+  assert.equal(
+    guardEmptyExecutionReply(
+      'Terminal ochildi, Janob.',
+      [{ name: 'open_app', ok: true }],
+      'Terminal och',
+    ),
+    'Terminal ochildi, Janob.',
+  );
+
+  assert.equal(
+    guardEmptyExecutionReply(
+      'Meni shoh_tech yaratgan, Janob.',
+      [],
+      'Seni kim yaratgan?',
+    ),
+    'Meni shoh_tech yaratgan, Janob.',
+  );
+
+  assert.equal(extractJarvisReplyText([], '', false), '');
+});
+

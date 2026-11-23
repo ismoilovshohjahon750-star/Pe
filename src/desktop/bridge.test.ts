@@ -4,6 +4,8 @@ import {
   buildNonInteractiveAptInstallCmd,
   createInitialLinuxStatus,
   createInitialRealAgentStatus,
+  createReconnectingAgentStatus,
+  isWinLockShortcut,
   mapClientPointToScreen,
   pickNewerFrame,
   resolveMcpExecutionMode,
@@ -14,11 +16,38 @@ import {
 test('initial real agent and linux statuses start cleanly', () => {
   const status = createInitialRealAgentStatus();
   assert.equal(status.connected, false);
+  assert.equal(status.reconnecting, false);
+  assert.equal(status.locked, false);
   assert.equal(status.hostname, null);
 
   const linux = createInitialLinuxStatus();
   assert.equal(linux.running, false);
   assert.equal(linux.display, ':99');
+});
+
+test('createReconnectingAgentStatus preserves connection and frame metadata while clearing fps', () => {
+  const connected = {
+    ...createInitialRealAgentStatus(),
+    connected: true,
+    locked: true,
+    desktopName: 'Winlogon',
+    hostname: 'WORKSTATION',
+    fps: 2.8,
+  };
+  const next = createReconnectingAgentStatus(connected);
+  assert.equal(next.connected, true);
+  assert.equal(next.reconnecting, true);
+  assert.equal(next.locked, true);
+  assert.equal(next.desktopName, 'Winlogon');
+  assert.equal(next.fps, 0);
+});
+
+test('isWinLockShortcut matches Meta+L and Ctrl+Alt+L without false positives', () => {
+  assert.equal(isWinLockShortcut('l', true, false, false), true);
+  assert.equal(isWinLockShortcut('L', true, false, false), true);
+  assert.equal(isWinLockShortcut('l', false, true, true), true);
+  assert.equal(isWinLockShortcut('l', false, true, false), false);
+  assert.equal(isWinLockShortcut('k', true, false, false), false);
 });
 
 test('resolveMcpExecutionMode routes tools to linux, real-win10, or sandbox accurately', () => {

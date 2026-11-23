@@ -593,7 +593,10 @@ async function startServer() {
     }
   });
 
+  const agentWsAlive = new WeakMap<WebSocket, boolean>();
   wssAgent.on('connection', (ws) => {
+    agentWsAlive.set(ws, true);
+    ws.on('pong', () => agentWsAlive.set(ws, true));
     desktopStore.logActivity(
       'system',
       'real_win10_agent',
@@ -631,6 +634,16 @@ async function startServer() {
         continue;
       }
       wsAlive.set(client, false);
+      if (client.readyState === WebSocket.OPEN) {
+        client.ping();
+      }
+    }
+    for (const client of wssAgent.clients) {
+      if (agentWsAlive.get(client) === false) {
+        client.terminate();
+        continue;
+      }
+      agentWsAlive.set(client, false);
       if (client.readyState === WebSocket.OPEN) {
         client.ping();
       }

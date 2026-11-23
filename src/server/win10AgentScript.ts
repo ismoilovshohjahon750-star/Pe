@@ -23,6 +23,9 @@ public class Win32Input {
     [DllImport("user32.dll")]
     public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
 
+    [DllImport("user32.dll")]
+    public static extern bool LockWorkStation();
+
     public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     public const uint MOUSEEVENTF_LEFTUP = 0x0004;
     public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
@@ -110,7 +113,11 @@ function Invoke-AgentTool($msg) {
         }
         "desktop_key" {
             $k = [string]$a.key
-            $map = @{ "Enter" = "{ENTER}"; "Return" = "{ENTER}"; "Tab" = "{TAB}"; "Escape" = "{ESC}"; "Backspace" = "{BACKSPACE}"; "Ctrl+S" = "^s"; "Ctrl+C" = "^c"; "Ctrl+V" = "^v"; "Alt+F4" = "%{F4}"; "Win" = "^{ESC}" }
+            if ($k -ieq "Win+L") {
+                [Win32Input]::LockWorkStation() | Out-Null
+                return "Locked workstation (Win+L)"
+            }
+            $map = @{ "Enter" = "{ENTER}"; "Return" = "{ENTER}"; "Space" = " "; "Tab" = "{TAB}"; "Escape" = "{ESC}"; "Backspace" = "{BACKSPACE}"; "Ctrl+S" = "^s"; "Ctrl+C" = "^c"; "Ctrl+V" = "^v"; "Alt+F4" = "%{F4}"; "Win" = "^{ESC}" }
             $send = if ($map.ContainsKey($k)) { $map[$k] } else { $k }
             [System.Windows.Forms.SendKeys]::SendWait($send)
             return "Sent key $k"

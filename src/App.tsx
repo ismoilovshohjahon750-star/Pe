@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Cpu, Monitor, Plug, Settings } from 'lucide-react';
+import { Cpu, Lock, Monitor, Plug, Settings, Smartphone } from 'lucide-react';
 import { LIQUID_PILL_BTN } from './components/liquidGlass.ts';
 import { JarvisModal } from './components/JarvisModal.tsx';
+import { LockScreen } from './components/LockScreen.tsx';
 import { McpConnectModal } from './components/McpConnectModal.tsx';
 import { PcConnectModal } from './components/PcConnectModal.tsx';
 import { SettingsModal } from './components/SettingsModal.tsx';
 import { RealLinuxView } from './components/RealLinuxView.tsx';
 import { RealWin10View } from './components/RealWin10View.tsx';
+import { authFetch, setOnUnauthorized, setSiteAuthToken } from './utils/siteAuthClient.ts';
 import {
   createInitialLinuxStatus,
   createInitialRealAgentStatus,
   pickNewerFrame,
+  type ConnectedDeviceSummary,
   type ExecutionTarget,
   type LinuxDesktopStatus,
   type RealAgentFrame,
@@ -18,6 +21,7 @@ import {
 } from './desktop/bridge.ts';
 
 export default function App() {
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [linuxStatus, setLinuxStatus] = useState<LinuxDesktopStatus>(() =>
     createInitialLinuxStatus(),
   );
@@ -29,6 +33,7 @@ export default function App() {
   const [executionTarget, setExecutionTarget] = useState<ExecutionTarget>('linux');
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [pcModalOpen, setPcModalOpen] = useState(false);
+  const [pcModalTab, setPcModalTab] = useState<'pc' | 'android'>('pc');
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [jarvisOpen, setJarvisOpen] = useState(false);
   const [browserSharing, setBrowserSharing] = useState(false);
@@ -36,45 +41,136 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const shareStreamRef = useRef<MediaStream | null>(null);
   const shareTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const shareWorkerRef = useRef<Worker | null>(null);
+  const shareWorkerUrlRef = useRef<string | null>(null);
+  const browserSharingRef = useRef(false);
+  const httpPostInFlightRef = useRef(false);
+  const userWantsLinuxRef = useRef(false);
+  const shareSessionRef = useRef<{
+    sessionId: string;
+    hostname: string;
+    osVersion: string;
+    username: string;
+    screenWidth: number;
+    screenHeight: number;
+  } | null>(null);
+  const activeDeviceIdRef = useRef<string | null>(null);
+  const showingRealPcRef = useRef(false);
   const lastWsFrameAtRef = useRef<number>(0);
   const jarvisSyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const handleLockSite = useCallback(async () => {
+    const token = authToken;
+    setSiteAuthToken(null);
+    setAuthToken(null);
+    setJarvisOpen(false);
+    setPcModalOpen(false);
+    setMcpModalOpen(false);
+    setSettingsModalOpen(false);
+    wsRef.current?.close();
+    wsRef.current = null;
+    if (token) {
+      await fetch('/api/auth/lock', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    setSiteAuthToken(authToken);
+    setOnUnauthorized(() => {
+      setSiteAuthToken(null);
+      setAuthToken(null);
+    });
+    return () => {
+      setOnUnauthorized(null);
+    };
+  }, [authToken]);
+
   const syncLinuxFrame = useCallback(() => {
-    fetch('/api/linux/frame', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null }) => {
+    if (!authToken) return;
+    authFetch('/api/linux/frame', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null } | null) => {
+        if (!data) return;
         if (data.status) setLinuxStatus(data.status);
         if (data.frame) {
           setLinuxFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
         }
       })
       .catch(() => {});
-  }, []);
+  }, [authToken]);
+
+  const [connectedDevices, setConnectedDevices] = useState<ConnectedDeviceSummary[]>([]);
+  const [deviceFrames, setDeviceFrames] = useState<Record<string, RealAgentFrame>>({});
+  const [splitView, setSplitView] = useState(false);
+  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+
+  const syncRealDevices = useCallback(() => {
+    if (!authToken) return;
+    authFetch('/api/real-win10/devices', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null; frames?: Record<string, RealAgentFrame> } | null) => {
+        if (data?.devices) {
+          setConnectedDevices(data.devices);
+          if (data.activeDeviceId !== undefined) setActiveDeviceId(data.activeDeviceId);
+          if (data.frames) setDeviceFrames(data.frames);
+        }
+      })
+      .catch(() => {});
+  }, [authToken]);
 
   const syncRealAgentFrame = useCallback(() => {
-    fetch('/api/real-win10/frame', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data: { status?: RealAgentStatus; frame?: RealAgentFrame | null; target?: ExecutionTarget }) => {
+    if (!authToken) return;
+    authFetch('/api/real-win10/frame', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: {
+        status?: RealAgentStatus;
+        frame?: RealAgentFrame | null;
+        frames?: Record<string, RealAgentFrame>;
+        target?: ExecutionTarget;
+        devices?: ConnectedDeviceSummary[];
+        activeDeviceId?: string | null;
+      } | null) => {
+        if (!data) return;
         if (data.status) setRealAgentStatus(data.status);
         if (data.frame) {
           setRealAgentFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
         }
-        if (data.target === 'real-win10' && data.status?.connected) {
+        if (data.frames) {
+          setDeviceFrames((prev) => {
+            const next = { ...prev };
+            for (const [id, f] of Object.entries(data.frames || {})) {
+              next[id] = pickNewerFrame(next[id] ?? null, f) ?? f;
+            }
+            return next;
+          });
+        }
+        if (data.devices) {
+          setConnectedDevices(data.devices);
+          if (data.devices.length > 0 && !activeDeviceIdRef.current && data.activeDeviceId === undefined) {
+            setActiveDeviceId(data.devices[0].id);
+          }
+        }
+        if (data.activeDeviceId !== undefined) setActiveDeviceId(data.activeDeviceId);
+        if (data.target === 'real-win10' && (data.status?.connected || (data.devices && data.devices.length > 0))) {
           setExecutionTarget('real-win10');
         }
       })
       .catch(() => {});
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
+    if (!authToken) return;
     let active = true;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
 
-    fetch('/api/linux/status', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null }) => {
-        if (!active) return;
+    authFetch('/api/linux/status', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null } | null) => {
+        if (!active || !data) return;
         if (data.status) setLinuxStatus(data.status);
         if (data.frame) {
           setLinuxFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
@@ -82,10 +178,10 @@ export default function App() {
       })
       .catch(() => {});
 
-    fetch('/api/real-win10/status', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data: { target?: ExecutionTarget; agent?: RealAgentStatus }) => {
-        if (!active) return;
+    authFetch('/api/real-win10/status', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { target?: ExecutionTarget; agent?: RealAgentStatus } | null) => {
+        if (!active || !data) return;
         if (data.agent) setRealAgentStatus(data.agent);
         if (data.target === 'real-win10' && data.agent?.connected) {
           setExecutionTarget('real-win10');
@@ -101,13 +197,26 @@ export default function App() {
       }
       try {
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
+        const socket = new WebSocket(
+          `${proto}//${window.location.host}/ws?token=${encodeURIComponent(authToken)}`,
+        );
         wsRef.current = socket;
 
         socket.onopen = () => {
           if (!active) return;
           attempt = 0;
           syncLinuxFrame();
+          syncRealAgentFrame();
+          if (browserSharingRef.current && shareSessionRef.current) {
+            try {
+              socket.send(JSON.stringify({
+                type: 'browser_agent:hello',
+                ...shareSessionRef.current,
+              }));
+            } catch {
+              // fallback handled during frame loop
+            }
+          }
         };
 
         socket.onmessage = (evt) => {
@@ -118,6 +227,10 @@ export default function App() {
               status?: LinuxDesktopStatus | RealAgentStatus;
               frame?: RealAgentFrame;
               target?: ExecutionTarget;
+              deviceId?: string;
+              active?: boolean;
+              devices?: ConnectedDeviceSummary[];
+              activeDeviceId?: string | null;
             };
             if (msg.type === 'linux_status' && msg.status) {
               setLinuxStatus(msg.status as LinuxDesktopStatus);
@@ -125,11 +238,54 @@ export default function App() {
               lastWsFrameAtRef.current = Date.now();
               setLinuxFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
             } else if (msg.type === 'real_agent_status' && msg.status) {
-              setRealAgentStatus(msg.status as RealAgentStatus);
+              const st = msg.status as RealAgentStatus;
+              setRealAgentStatus(st);
+              if (st.connected && !userWantsLinuxRef.current) {
+                setExecutionTarget('real-win10');
+              }
+            } else if (msg.type === 'real_devices') {
+              const devList = msg.devices;
+              const actId = msg.activeDeviceId;
+              if (devList) {
+                setConnectedDevices(devList);
+                if (devList.length > 0) {
+                  if (!userWantsLinuxRef.current) {
+                    setExecutionTarget('real-win10');
+                  }
+                  if (!activeDeviceIdRef.current && !actId) {
+                    setActiveDeviceId(devList[0].id);
+                  }
+                }
+              }
+              if (actId !== undefined) setActiveDeviceId(actId);
             } else if (msg.type === 'real_agent_frame' && msg.frame) {
               lastWsFrameAtRef.current = Date.now();
               setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
+              if (!userWantsLinuxRef.current) {
+                setExecutionTarget('real-win10');
+              }
+            } else if (msg.type === 'real_agent_frame_for') {
+              const dId = msg.deviceId;
+              const f = msg.frame;
+              if (dId && f) {
+                lastWsFrameAtRef.current = Date.now();
+                setDeviceFrames((prev) => ({
+                  ...prev,
+                  [dId]: pickNewerFrame(prev[dId] ?? null, f) ?? f,
+                }));
+                if (msg.active || !activeDeviceIdRef.current || activeDeviceIdRef.current === dId) {
+                  setRealAgentFrame((prev) => pickNewerFrame(prev, f));
+                }
+                if (!userWantsLinuxRef.current) {
+                  setExecutionTarget('real-win10');
+                }
+              }
             } else if (msg.type === 'execution_target' && msg.target) {
+              if (msg.target === 'linux') {
+                userWantsLinuxRef.current = true;
+              } else {
+                userWantsLinuxRef.current = false;
+              }
               setExecutionTarget(msg.target);
             }
           } catch {
@@ -176,8 +332,11 @@ export default function App() {
         syncLinuxFrame();
         syncRealAgentFrame();
         connect();
-      } else if (Date.now() - lastWsFrameAtRef.current > 5500) {
+      } else if (Date.now() - lastWsFrameAtRef.current > 3500) {
         syncLinuxFrame();
+        if (showingRealPcRef.current) {
+          syncRealAgentFrame();
+        }
       }
     }, 1500);
 
@@ -187,12 +346,23 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleWakeup);
       window.removeEventListener('online', handleWakeup);
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (shareWorkerRef.current) {
+        try {
+          shareWorkerRef.current.postMessage('stop');
+          shareWorkerRef.current.terminate();
+        } catch {}
+        shareWorkerRef.current = null;
+      }
+      if (shareWorkerUrlRef.current) {
+        URL.revokeObjectURL(shareWorkerUrlRef.current);
+        shareWorkerUrlRef.current = null;
+      }
       if (shareTimerRef.current) clearInterval(shareTimerRef.current);
       if (jarvisSyncTimerRef.current) clearInterval(jarvisSyncTimerRef.current);
       shareStreamRef.current?.getTracks().forEach((t) => t.stop());
       wsRef.current?.close();
     };
-  }, [syncLinuxFrame, syncRealAgentFrame]);
+  }, [authToken, syncLinuxFrame, syncRealAgentFrame]);
 
   const sendWs = useCallback((payload: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -202,7 +372,7 @@ export default function App() {
     }
     const actionType = String(payload.type || '');
     if (actionType.startsWith('user:linux_') || actionType.startsWith('user:real_')) {
-      void fetch('/api/desktop/input', {
+      void authFetch('/api/desktop/input', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -211,6 +381,17 @@ export default function App() {
   }, []);
 
   const stopBrowserShare = useCallback(() => {
+    if (shareWorkerRef.current) {
+      try {
+        shareWorkerRef.current.postMessage('stop');
+        shareWorkerRef.current.terminate();
+      } catch {}
+      shareWorkerRef.current = null;
+    }
+    if (shareWorkerUrlRef.current) {
+      URL.revokeObjectURL(shareWorkerUrlRef.current);
+      shareWorkerUrlRef.current = null;
+    }
     if (shareTimerRef.current) {
       clearInterval(shareTimerRef.current);
       shareTimerRef.current = null;
@@ -219,19 +400,43 @@ export default function App() {
       shareStreamRef.current.getTracks().forEach((t) => t.stop());
       shareStreamRef.current = null;
     }
+    const prevSession = shareSessionRef.current;
+    const wasSharing = browserSharingRef.current || Boolean(prevSession);
+    shareSessionRef.current = null;
+    browserSharingRef.current = false;
     setBrowserSharing(false);
-    sendWs({ type: 'browser_agent:stop' });
-  }, [sendWs]);
+    if (wasSharing) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'browser_agent:stop', sessionId: prevSession?.sessionId }));
+      } else {
+        void authFetch('/api/browser-share/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: prevSession?.sessionId }),
+        }).catch(() => {});
+      }
+    }
+  }, []);
 
   const startBrowserShare = useCallback(async () => {
     setShareError(null);
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      setShareError('Bu brauzer ekran ulashishni qo‘llab-quvvatlamaydi.');
+      setShareError(
+        'Bu mobil brauzer ekran ulashishni (getDisplayMedia) qo‘llab-quvvatlamaydi. 4-usul (Screen Stream over HTTP) yoki 3-usul (Simsiz ADB) dan foydalaning.',
+      );
+      setPcModalTab('android');
+      setPcModalOpen(true);
       return;
     }
     try {
+      const isAndroid = typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
+      const isMobile = typeof navigator !== 'undefined' && /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
+
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 5, max: 10 } },
+        video: {
+          frameRate: { ideal: isMobile ? 6 : 8, max: 12 },
+        },
         audio: false,
       });
       stopBrowserShare();
@@ -240,48 +445,147 @@ export default function App() {
       const video = document.createElement('video');
       video.srcObject = stream;
       video.muted = true;
+      video.playsInline = true;
       await video.play();
 
-      const srcW = video.videoWidth || 1280;
-      const srcH = video.videoHeight || 720;
-      const scale = Math.min(1, 1280 / srcW);
-      const w = Math.max(320, Math.round(srcW * scale));
-      const h = Math.max(180, Math.round(srcH * scale));
+      const targetMax = isMobile ? 960 : 1280;
+      const calcDims = () => {
+        const srcW = video.videoWidth || (isMobile ? 720 : 1280);
+        const srcH = video.videoHeight || (isMobile ? 1280 : 720);
+        const maxDim = Math.max(srcW, srcH);
+        const scale = maxDim > targetMax ? targetMax / maxDim : 1;
+        return {
+          w: Math.max(240, Math.round(srcW * scale)),
+          h: Math.max(240, Math.round(srcH * scale)),
+        };
+      };
 
+      const initialDims = calcDims();
       const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas.width = initialDims.w;
+      canvas.height = initialDims.h;
       const ctx = canvas.getContext('2d');
 
-      sendWs({
-        type: 'browser_agent:hello',
-        hostname: 'Brauzer Ekran Ulashish',
-        osVersion: navigator.platform || 'Windows',
-        username: 'PC',
-        screenWidth: w,
-        screenHeight: h,
-      });
+      const sessionId = `bs-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const hostname = isAndroid ? 'Android Telefon' : isMobile ? 'Mobil Telefon' : 'Brauzer Ekran Ulashish';
+      const osVersion = isAndroid ? 'Android 10+ (Chrome Cast)' : (navigator.platform || 'Browser');
+      const username = isAndroid ? 'Telefon' : 'PC';
+
+      shareSessionRef.current = {
+        sessionId,
+        hostname,
+        osVersion,
+        username,
+        screenWidth: initialDims.w,
+        screenHeight: initialDims.h,
+      };
+      browserSharingRef.current = true;
+      userWantsLinuxRef.current = false;
+      setBrowserSharing(true);
+
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'browser_agent:hello',
+          ...shareSessionRef.current,
+        }));
+      } else {
+        void authFetch('/api/browser-share/hello', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(shareSessionRef.current),
+        }).catch(() => {});
+      }
 
       const sendFrame = () => {
         if (!ctx || video.readyState < 2) return;
-        ctx.drawImage(video, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
-        const base64 = dataUrl.split(',')[1] || '';
-        if (base64) {
-          sendWs({
-            type: 'browser_agent:frame',
-            mimeType: 'image/jpeg',
-            width: w,
-            height: h,
-            data: base64,
-          });
+        try {
+          const { w: curW, h: curH } = calcDims();
+          if (canvas.width !== curW || canvas.height !== curH) {
+            canvas.width = curW;
+            canvas.height = curH;
+            if (shareSessionRef.current) {
+              shareSessionRef.current.screenWidth = curW;
+              shareSessionRef.current.screenHeight = curH;
+            }
+          }
+          ctx.drawImage(video, 0, 0, curW, curH);
+          const dataUrl = canvas.toDataURL('image/jpeg', isMobile ? 0.58 : 0.65);
+          const base64 = dataUrl.split(',')[1] || '';
+          if (!base64) return;
+
+          const socket = wsRef.current;
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+              type: 'browser_agent:frame',
+              sessionId,
+              mimeType: 'image/jpeg',
+              width: curW,
+              height: curH,
+              data: base64,
+            }));
+          } else if (!httpPostInFlightRef.current) {
+            httpPostInFlightRef.current = true;
+            void authFetch('/api/browser-share/frame', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                sessionId,
+                hostname,
+                osVersion,
+                username,
+                mimeType: 'image/jpeg',
+                width: curW,
+                height: curH,
+                data: base64,
+              }),
+            })
+              .catch(() => {})
+              .finally(() => {
+                httpPostInFlightRef.current = false;
+              });
+          }
+        } catch {
+          // ignore frame drawing error
         }
       };
 
       sendFrame();
-      shareTimerRef.current = setInterval(sendFrame, 350);
-      setBrowserSharing(true);
+
+      // Inline Blob Web Worker ensures frame ticks continue when user switches apps on mobile
+      try {
+        const workerBlob = new Blob([
+          `
+          let intervalId = null;
+          self.onmessage = function(e) {
+            if (e.data === 'start') {
+              if (intervalId) clearInterval(intervalId);
+              intervalId = setInterval(function() {
+                self.postMessage('tick');
+              }, 320);
+            } else if (e.data === 'stop') {
+              if (intervalId) clearInterval(intervalId);
+              intervalId = null;
+            }
+          };
+          `
+        ], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(workerBlob);
+        shareWorkerUrlRef.current = workerUrl;
+        const worker = new Worker(workerUrl);
+        worker.onmessage = (e) => {
+          if (e.data === 'tick') {
+            sendFrame();
+          }
+        };
+        worker.postMessage('start');
+        shareWorkerRef.current = worker;
+      } catch {
+        shareTimerRef.current = setInterval(sendFrame, 320);
+      }
+
       setPcModalOpen(false);
+      syncRealAgentFrame();
 
       const [track] = stream.getVideoTracks();
       if (track) {
@@ -292,19 +596,79 @@ export default function App() {
     } catch (err) {
       const msg = (err as Error).message || 'Ekran ulashish bekor qilindi';
       setShareError(msg);
+      if (/android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent)) {
+        setPcModalTab('android');
+        setPcModalOpen(true);
+      }
     }
-  }, [sendWs, stopBrowserShare]);
+  }, [stopBrowserShare, syncRealAgentFrame]);
 
   const switchTarget = async (next: ExecutionTarget) => {
+    if (next === 'linux') {
+      userWantsLinuxRef.current = true;
+    } else {
+      userWantsLinuxRef.current = false;
+    }
     setExecutionTarget(next);
-    await fetch('/api/real-win10/target', {
+    await authFetch('/api/real-win10/target', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ target: next }),
     }).catch(() => {});
   };
 
-  const showingRealPc = executionTarget === 'real-win10' && realAgentStatus.connected;
+  const unlockRealPc = async (
+    payload: { pin?: string; wake?: boolean; sas?: boolean },
+    targetDeviceId?: string | null,
+  ) => {
+    const res = await authFetch('/api/desktop/input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'user:real_unlock',
+        deviceId: targetDeviceId ?? activeDeviceId ?? undefined,
+        ...payload,
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      result?: unknown;
+      error?: string;
+    };
+    if (!res.ok || !data.ok) {
+      return {
+        ok: false,
+        error: data.error || 'Windows qulfini ochish buyrug‘i bajarilmadi.',
+      };
+    }
+    syncRealAgentFrame();
+    return {
+      ok: true,
+      message:
+        typeof data.result === 'string' && data.result
+          ? data.result
+          : 'PIN/parol yuborildi.',
+    };
+  };
+
+  const hasRealDevice = realAgentStatus.connected || connectedDevices.length > 0;
+  const showingRealPc =
+    (executionTarget === 'real-win10' && hasRealDevice) ||
+    (hasRealDevice && executionTarget !== 'linux');
+  activeDeviceIdRef.current = activeDeviceId;
+  showingRealPcRef.current = showingRealPc;
+  browserSharingRef.current = browserSharing;
+
+  if (!authToken) {
+    return (
+      <LockScreen
+        onUnlocked={(token) => {
+          setSiteAuthToken(token);
+          setAuthToken(token);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="h-screen h-[100dvh] w-screen w-full flex flex-col bg-[#03060C] text-slate-100 overflow-hidden">
@@ -325,13 +689,115 @@ export default function App() {
             <Cpu className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
             <span className="relative z-10">J.A.R.V.I.S.</span>
           </button>
-          <button type="button" onClick={() => setPcModalOpen(true)} className={LIQUID_PILL_BTN}>
+
+          {/* Quick Phone Screen switch if user is on Linux while phone is connected */}
+          {hasRealDevice && executionTarget === 'linux' && (
+            <button
+              type="button"
+              onClick={() => {
+                switchTarget('real-win10');
+                if (connectedDevices[0]) setActiveDeviceId(connectedDevices[0].id);
+              }}
+              className={`${LIQUID_PILL_BTN} bg-emerald-500/30 border-emerald-300 text-white animate-pulse`}
+              title="Telefoningiz ekrani tayyor! Ochish uchun bosing"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-emerald-300 relative z-10" />
+              <span className="relative z-10 font-bold">📲 Telefon Ekrani (Ochish)</span>
+            </button>
+          )}
+
+          {/* Connected Device Pills */}
+          <button
+            type="button"
+            onClick={() => {
+              switchTarget('linux');
+              setSplitView(false);
+            }}
+            className={`${LIQUID_PILL_BTN} ${
+              !showingRealPc && !splitView ? 'bg-cyan-500/25 border-cyan-300/60 text-white' : ''
+            }`}
+          >
+            <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            <span className="relative z-10">Linux</span>
+          </button>
+
+          {connectedDevices.map((d) => {
+            const isActive = showingRealPc && (activeDeviceId === d.id || connectedDevices.length === 1);
+            return (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => {
+                  setActiveDeviceId(d.id);
+                  switchTarget('real-win10');
+                  setSplitView(false);
+                  void authFetch('/api/real-win10/active-device', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ deviceId: d.id }),
+                  }).catch(() => {});
+                }}
+                className={`${LIQUID_PILL_BTN} ${
+                  isActive && !splitView ? 'bg-emerald-500/25 border-emerald-300/60 text-white' : ''
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10 animate-pulse" aria-hidden="true" />
+                <span className="relative z-10">{d.hostname.slice(0, 14)} ({d.kind})</span>
+              </button>
+            );
+          })}
+
+          {connectedDevices.length >= 2 && (
+            <button
+              type="button"
+              onClick={() => {
+                setSplitView((prev) => !prev);
+                if (!splitView) switchTarget('real-win10');
+              }}
+              className={`${LIQUID_PILL_BTN} ${
+                splitView ? 'bg-purple-500/30 border-purple-300/70 text-white' : ''
+              }`}
+            >
+              <span className="relative z-10">⚡ 2-Ekran Split</span>
+            </button>
+          )}
+
+          {browserSharing ? (
+            <button
+              type="button"
+              onClick={stopBrowserShare}
+              className={`${LIQUID_PILL_BTN} bg-rose-500/25 border-rose-300/60 text-white animate-pulse`}
+              title="Translatsiyani to'xtatish"
+            >
+              <span className="w-2 h-2 rounded-full bg-rose-400 relative z-10" aria-hidden="true" />
+              <span className="relative z-10 font-medium">🔴 Translatsiya faol (To'xtatish)</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={startBrowserShare}
+              className={`${LIQUID_PILL_BTN} bg-emerald-500/15 border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/25`}
+              title="Telefonda ekranni ulashish (100% ADB-siz)"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-emerald-400 relative z-10" strokeWidth={1.75} />
+              <span className="relative z-10">📲 1-usul: Ekran Ulash</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setPcModalTab('pc');
+              setPcModalOpen(true);
+            }}
+            className={LIQUID_PILL_BTN}
+          >
             {realAgentStatus.connected ? (
               <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10" aria-hidden="true" />
             ) : (
               <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
             )}
-            <span className="relative z-10">Haqiqiy PC Ulash</span>
+            <span className="relative z-10">Qurilma Qo'shish</span>
           </button>
           <button type="button" onClick={() => setMcpModalOpen(true)} className={LIQUID_PILL_BTN}>
             <Plug className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
@@ -341,19 +807,115 @@ export default function App() {
             <Settings className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
             <span className="relative z-10">Sozlamalar</span>
           </button>
+          <button
+            type="button"
+            onClick={() => void handleLockSite()}
+            className={LIQUID_PILL_BTN}
+            title="Saytni qulflash"
+          >
+            <Lock className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            <span className="relative z-10">Qulflash</span>
+          </button>
         </div>
       </header>
 
+      {shareError && !pcModalOpen && (
+        <div className="px-3 py-2 bg-rose-950/90 border-b border-rose-400/40 text-rose-100 text-xs flex flex-wrap items-center justify-between gap-2 shrink-0">
+          <span>{shareError}</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setPcModalTab('android');
+                setPcModalOpen(true);
+              }}
+              className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white font-medium"
+            >
+              Android usullarini ochish
+            </button>
+            <button
+              type="button"
+              onClick={() => setShareError(null)}
+              className="px-2 py-1 rounded-lg hover:bg-white/10 text-rose-200"
+              aria-label="Xatoni yopish"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       <main className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        {showingRealPc ? (
+        {splitView && connectedDevices.length >= 2 ? (
+          <div className="flex-1 min-h-0 w-full grid grid-cols-1 md:grid-cols-2 gap-2 p-2 bg-[#03060C]">
+            {connectedDevices.slice(0, 2).map((dev) => {
+              const devFrame = deviceFrames[dev.id] || realAgentFrame;
+              const devStatus: RealAgentStatus = {
+                connected: true,
+                hostname: dev.hostname,
+                osVersion: dev.osVersion,
+                username: dev.username,
+                screenWidth: dev.screenWidth,
+                screenHeight: dev.screenHeight,
+                connectedAt: dev.connectedAt,
+                lastFrameAt: dev.lastFrameAt,
+                fps: dev.fps,
+              };
+              return (
+                <div key={dev.id} className="relative flex-1 min-h-0 flex flex-col rounded-2xl overflow-hidden border border-white/15 bg-[#070B14]">
+                  <div className="px-3 py-1.5 bg-black/40 border-b border-white/10 flex items-center justify-between text-xs text-white/90">
+                    <span className="font-medium flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                      {dev.hostname} ({dev.kind})
+                    </span>
+                    <span className="text-[10px] text-white/60">{dev.screenWidth}×{dev.screenHeight}</span>
+                  </div>
+                  <div className="flex-1 min-h-0 relative">
+                    <RealWin10View
+                      status={devStatus}
+                      frame={devFrame}
+                      allowRotate={!jarvisOpen}
+                      onClickAt={(x, y, button) =>
+                        sendWs({ type: 'user:real_click', x, y, button, deviceId: dev.id })
+                      }
+                      onScrollAt={(x, y, deltaY) =>
+                        sendWs({ type: 'user:real_scroll', x, y, deltaY, deviceId: dev.id })
+                      }
+                      onTypeText={(text, enter) =>
+                        sendWs({ type: 'user:real_type', text, enter, deviceId: dev.id })
+                      }
+                      onPressKey={(key) =>
+                        sendWs({ type: 'user:real_key', key, deviceId: dev.id })
+                      }
+                      onUnlockPc={(payload) => unlockRealPc(payload, dev.id)}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : showingRealPc ? (
           <RealWin10View
             status={realAgentStatus}
-            frame={realAgentFrame}
+            frame={
+              activeDeviceId && deviceFrames[activeDeviceId]
+                ? deviceFrames[activeDeviceId]
+                : realAgentFrame
+            }
             allowRotate={!jarvisOpen}
-            onClickAt={(x, y, button) => sendWs({ type: 'user:real_click', x, y, button })}
-            onScrollAt={(x, y, deltaY) => sendWs({ type: 'user:real_scroll', x, y, deltaY })}
-            onTypeText={(text, enter) => sendWs({ type: 'user:real_type', text, enter })}
-            onPressKey={(key) => sendWs({ type: 'user:real_key', key })}
+            onClickAt={(x, y, button) =>
+              sendWs({ type: 'user:real_click', x, y, button, deviceId: activeDeviceId })
+            }
+            onScrollAt={(x, y, deltaY) =>
+              sendWs({ type: 'user:real_scroll', x, y, deltaY, deviceId: activeDeviceId })
+            }
+            onTypeText={(text, enter) =>
+              sendWs({ type: 'user:real_type', text, enter, deviceId: activeDeviceId })
+            }
+            onPressKey={(key) =>
+              sendWs({ type: 'user:real_key', key, deviceId: activeDeviceId })
+            }
+            onUnlockPc={(payload) => unlockRealPc(payload, activeDeviceId)}
           />
         ) : (
           <RealLinuxView
@@ -366,10 +928,10 @@ export default function App() {
             onPressKey={(key) => sendWs({ type: 'user:linux_key', key })}
             onRetry={() => {
               setLinuxStatus((prev) => ({ ...prev, error: null }));
-              void fetch('/api/linux/restart', { method: 'POST' })
-                .then((r) => r.json())
-                .then((data: { status?: LinuxDesktopStatus }) => {
-                  if (data.status) setLinuxStatus(data.status);
+              void authFetch('/api/linux/restart', { method: 'POST' })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((data: { status?: LinuxDesktopStatus } | null) => {
+                  if (data?.status) setLinuxStatus(data.status);
                 })
                 .catch(() => {});
             }}
@@ -406,6 +968,8 @@ export default function App() {
 
       <PcConnectModal
         open={pcModalOpen}
+        initialTab={pcModalTab}
+        activeDeviceId={activeDeviceId}
         status={realAgentStatus}
         executionTarget={executionTarget}
         browserSharing={browserSharing}

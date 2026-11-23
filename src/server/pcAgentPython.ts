@@ -11,6 +11,7 @@ Run:
 
 import asyncio
 import base64
+import ctypes
 import getpass
 import io
 import json
@@ -33,19 +34,53 @@ WS_URI = ${JSON.stringify(finalWsUrl)}
 pyautogui.FAILSAFE = False
 
 
+def keep_windows_awake():
+    if os.name == "nt":
+        try:
+            # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+        except Exception:
+            pass
+
+
+def try_attach_input_desktop() -> tuple[bool, str]:
+    if os.name != "nt":
+        return False, "Default"
+    try:
+        user32 = ctypes.windll.user32
+        h_desk = user32.OpenInputDesktop(0, False, 0x01FF)
+        if not h_desk:
+            h_desk = user32.OpenInputDesktop(0, False, 0x0001)
+        if not h_desk:
+            return True, "Winlogon"
+        name_buf = ctypes.create_unicode_buffer(128)
+        needed = ctypes.c_ulong(0)
+        desk_name = "Default"
+        if user32.GetUserObjectInformationW(h_desk, 2, name_buf, ctypes.sizeof(name_buf), ctypes.byref(needed)):
+            desk_name = name_buf.value or "Default"
+        user32.SetThreadDesktop(h_desk)
+        user32.CloseDesktop(h_desk)
+        is_locked = desk_name.lower() in ("winlogon", "screen-saver")
+        return is_locked, desk_name
+    except Exception:
+        return False, "Default"
+
+
 def render_locked_frame() -> tuple[int, int, bytes]:
     w, h = 960, 540
     img = Image.new("RGB", (w, h), (7, 11, 20))
     draw = ImageDraw.Draw(img)
-    draw.text((60, 200), "PC QULFLANGAN (Win+L)", fill=(56, 189, 248))
-    draw.text((60, 240), "Fonda aloqa faol: run_powershell, run_bash va file_* buyruqlari ishlayapti.", fill=(203, 213, 225))
-    draw.text((60, 272), "Jonli ekran va sichqoncha uchun kompyuter qulfini oching.", fill=(148, 163, 184))
+    draw.text((60, 190), "PC QULFLANGAN (Win+L)", fill=(56, 189, 248))
+    draw.text((60, 232), "Aloqa faol: fonda buyruqlar ishlayapti.", fill=(203, 213, 225))
+    draw.text((60, 264), "Jonli Winlogon ekrani va PIN kiritish uchun JarvisPcAgent-Setup.bat (Servis) dan foydalaning.", fill=(148, 163, 184))
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=55)
     return w, h, buf.getvalue()
 
 
 def capture_frame_payload() -> dict:
+    keep_windows_awake()
+    is_locked, desk_name = try_attach_input_desktop()
     try:
         with mss.mss() as sct:
             monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
@@ -67,6 +102,8 @@ def capture_frame_payload() -> dict:
                 "cursorX": int(cx),
                 "cursorY": int(cy),
                 "timestamp": int(time.time() * 1000),
+                "locked": bool(is_locked),
+                "desktopName": desk_name,
             }
     except Exception:
         w, h, jpg = render_locked_frame()
@@ -79,10 +116,13 @@ def capture_frame_payload() -> dict:
             "cursorX": 0,
             "cursorY": 0,
             "timestamp": int(time.time() * 1000),
+            "locked": True,
+            "desktopName": "Winlogon",
         }
 
 
 def run_tool(tool: str, args: dict):
+    try_attach_input_desktop()
     if tool == "desktop_screenshot":
         try:
             w, h = pyautogui.size()
@@ -124,12 +164,26 @@ def run_tool(tool: str, args: dict):
 
     if tool == "desktop_key":
         key = str(args.get("key", "enter"))
+        if key.lower() == "win+l" and os.name == "nt":
+            ctypes.windll.user32.LockWorkStation()
+            return "Locked workstation (Win+L)"
         key_map = {
             "Enter": "enter",
             "Return": "enter",
+            "Space": "space",
+            " ": "space",
             "Tab": "tab",
             "Escape": "esc",
             "Backspace": "backspace",
+            "Delete": "delete",
+            "Home": "home",
+            "End": "end",
+            "PageUp": "pageup",
+            "PageDown": "pagedown",
+            "ArrowUp": "up",
+            "ArrowDown": "down",
+            "ArrowLeft": "left",
+            "ArrowRight": "right",
             "Win": "win",
         }
         if "+" in key:
@@ -227,8 +281,9 @@ def run_tool(tool: str, args: dict):
 
 
 async def connect_once():
+    keep_windows_awake()
     print(f"Connecting real PC to {WS_URI} ...")
-    async with websockets.connect(WS_URI, max_size=16 * 1024 * 1024, ping_interval=15) as ws:
+    async with websockets.connect(WS_URI, max_size=16 * 1024 * 1024, ping_interval=8, ping_timeout=10) as ws:
         try:
             w, h = pyautogui.size()
         except Exception:
@@ -281,8 +336,8 @@ async def main():
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"Connection interrupted ({exc}), reconnecting in 3s...")
-            await asyncio.sleep(3)
+            print(f"Connection interrupted ({exc}), reconnecting in 1s...")
+            await asyncio.sleep(1)
 
 
 if __name__ == "__main__":

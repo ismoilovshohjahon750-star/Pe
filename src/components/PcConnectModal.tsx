@@ -193,13 +193,15 @@ export function PcConnectModal({
             </div>
             <p className="text-white/70 leading-relaxed">
               Windows ichidagi tayyor <span className="font-mono-tabular text-white/95">.NET csc.exe</span> orqali{' '}
-              <span className="font-mono-tabular text-cyan-200">%USERPROFILE%\JarvisAgent\JarvisPcAgent.exe</span>{' '}
-              faylini tuzib, konsol oynasisiz fonda ishga tushiradi va uzilsa avtomatik qayta ulanadi.
+              <span className="font-mono-tabular text-cyan-200">%ProgramData%\JarvisAgent\JarvisPcAgent.exe</span>{' '}
+              faylini tuzib, <span className="font-mono-tabular text-white/95">JarvisPcAgentService</span> (LocalSystem)
+              sifatida fonda ishga tushiradi va aloqa uzilsa avtomatik qayta ulanadi.
             </p>
             <div className="rounded-2xl bg-cyan-500/10 border border-cyan-300/25 px-3.5 py-2.5 text-cyan-100/90 leading-relaxed">
-              <strong>Win+L (Ekran qulflanganda):</strong> Agent fonda uzilmasdan ishlayveradi — terminal
-              (<span className="font-mono-tabular">run_powershell</span>, <span className="font-mono-tabular">run_bash</span>) va fayl buyruqlari
-              (<span className="font-mono-tabular">file_*</span>) bajariladi. Faqat Windows xavfsizlik qoidasi sababli qulf ochilmaguncha jonli ekran tasviri va sichqoncha/klaviatura bosishlari tizim tomonidan vaqtincha bloklanadi.
+              <strong>Win+L (Qulf ekrani va PIN/Parol bilan ochish):</strong> O‘rnatish vaqtida Administrator (UAC)
+              ruxsatini tasdiqlasangiz, <span className="font-mono-tabular">Win+L</span> bosilganda ham aloqa uzilmaydi,
+              qulf ekrani (<span className="font-mono-tabular">Winlogon</span>) jonli ko‘rinadi va PIN/parolingizni
+              yozib kompyuter qulfini masofadan ochishingiz mumkin.
             </div>
 
             <div className="space-y-2">

@@ -21,25 +21,33 @@ interface McpToolDef {
   inputSchema: Record<string, unknown>;
 }
 
+const DEVICE_SELECTOR_PROP = {
+  type: 'string',
+  description: 'Optional target device when PC or Android is connected: "android", "pc", "all", or device ID',
+};
+
 const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'desktop_screenshot',
     description:
-      'Capture a live screenshot of the Debian 12 Linux X11 desktop (1280x720 coordinate space) along with all open X11 window IDs/bounds, active window title, and cursor coordinates.',
+      'Capture a live screenshot of the active desktop or connected device (Linux X11, Windows PC, or Android).',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        device: DEVICE_SELECTOR_PROP,
+      },
       additionalProperties: false,
     },
   },
   {
     name: 'desktop_move',
-    description: 'Move the Linux X11 mouse cursor to (x, y) in the 1280x720 desktop.',
+    description: 'Move the mouse cursor to (x, y).',
     inputSchema: {
       type: 'object',
       properties: {
         x: { type: 'number', description: 'X coordinate (0..1279)' },
         y: { type: 'number', description: 'Y coordinate (0..719)' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['x', 'y'],
     },
@@ -47,7 +55,7 @@ const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'desktop_click',
     description:
-      'Move mouse to (x, y) and click on Linux X11 UI elements (desktop icons, menus, windows, browser links, taskbar).',
+      'Move mouse/tap to (x, y) and click UI elements (desktop icons, menus, windows, browser links, taskbar).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -58,6 +66,7 @@ const MCP_TOOLS: McpToolDef[] = [
           enum: ['left', 'right', 'middle', 'double'],
           description: 'Mouse button or double-click (default: left)',
         },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['x', 'y'],
     },
@@ -80,7 +89,7 @@ const MCP_TOOLS: McpToolDef[] = [
   },
   {
     name: 'desktop_scroll',
-    description: 'Scroll mouse wheel up/down/left/right at (x, y) on the Linux X11 desktop.',
+    description: 'Scroll mouse wheel or swipe up/down/left/right at (x, y).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -88,18 +97,20 @@ const MCP_TOOLS: McpToolDef[] = [
         y: { type: 'number', description: 'Y coordinate (default 360)' },
         direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'Scroll direction' },
         clicks: { type: 'number', description: 'Number of wheel steps (1..25, default 3)' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['direction'],
     },
   },
   {
     name: 'desktop_type',
-    description: 'Type text (supports multi-line) into the currently focused Linux X11 window.',
+    description: 'Type text (supports multi-line) into the currently focused window or device.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text to type' },
         enter: { type: 'boolean', description: 'Press Return after typing' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['text'],
     },
@@ -107,11 +118,12 @@ const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'desktop_key',
     description:
-      'Press a keyboard key or shortcut on X11 (e.g. Return, Escape, Tab, Ctrl+C, Ctrl+S, Ctrl+L, Ctrl+Shift+T, Alt+F4, Alt+Tab, Super, F5, Up, Down).',
+      'Press a keyboard key or shortcut (e.g. Return, Escape, Tab, Ctrl+C, Ctrl+S, Ctrl+L, Ctrl+Shift+T, Alt+F4, Alt+Tab, Super, F5, Up, Down).',
     inputSchema: {
       type: 'object',
       properties: {
         key: { type: 'string', description: 'Key or shortcut e.g. Return, Ctrl+C, Alt+F4, Ctrl+L' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['key'],
     },
@@ -119,7 +131,7 @@ const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'open_app',
     description:
-      'Launch a Linux GUI application on DISPLAY=:99 (terminal, chromium, files, mousepad, calculator, taskmgr, settings) or any custom Linux command.',
+      'Launch an application on the active desktop or connected device (terminal, chromium, files, mousepad, calculator, taskmgr, settings) or any custom command.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -128,9 +140,10 @@ const MCP_TOOLS: McpToolDef[] = [
           description:
             'App name: terminal, chromium, files, mousepad, calculator, taskmgr, settings (or custom app name)',
         },
-        command: { type: 'string', description: 'Optional arbitrary bash/GUI command to launch on DISPLAY=:99' },
-        filePath: { type: 'string', description: 'Optional file path for mousepad or folder path for files' },
-        url: { type: 'string', description: 'Optional URL when opening chromium' },
+        command: { type: 'string', description: 'Optional arbitrary bash/GUI command to launch' },
+        filePath: { type: 'string', description: 'Optional file path for editor or folder path for files' },
+        url: { type: 'string', description: 'Optional URL when opening browser' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['app'],
     },
@@ -163,14 +176,15 @@ const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'run_bash',
     description:
-      'Execute any Linux bash command as root with DISPLAY=:99 (supports apt, python3, node, curl, git, systemctl/process management, GUI launches with background=true).',
+      'Execute any bash/shell command on the active desktop or connected PC/Android device.',
     inputSchema: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Bash command to execute' },
+        command: { type: 'string', description: 'Bash/shell command to execute' },
         cwd: { type: 'string', description: 'Working directory (default: /root)' },
         timeoutMs: { type: 'number', description: 'Timeout in ms (1000..120000, default 30000)' },
         background: { type: 'boolean', description: 'Run detached in background and return immediately' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['command'],
     },
@@ -178,32 +192,35 @@ const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'run_powershell',
     description:
-      'Alias for run_bash on the Debian 12 Linux desktop (runs bash commands with DISPLAY=:99).',
+      'Execute PowerShell on connected Windows PC (or bash on Debian 12 Linux desktop).',
     inputSchema: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Shell command to execute' },
+        command: { type: 'string', description: 'Shell/PowerShell command to execute' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['command'],
     },
   },
   {
     name: 'file_list',
-    description: 'List files and folders inside a Linux directory (default: /root/Desktop).',
+    description: 'List files and folders inside a directory on the active desktop or connected device.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Linux directory path e.g. /root/Desktop or /app/applet' },
+        path: { type: 'string', description: 'Directory path e.g. /root/Desktop or C:\\Users\\User\\Desktop' },
+        device: DEVICE_SELECTOR_PROP,
       },
     },
   },
   {
     name: 'file_read',
-    description: 'Read a text or code file from the Linux filesystem.',
+    description: 'Read a text or code file from the filesystem.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Linux file path' },
+        path: { type: 'string', description: 'File path' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['path'],
     },
@@ -211,38 +228,91 @@ const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'file_write',
     description:
-      'Create or overwrite a file on the Linux filesystem (persisted on disk) and optionally open it in Mousepad.',
+      'Create or overwrite a file on the filesystem (persisted on disk) and optionally open it in editor.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Linux file path e.g. /root/Projects/app.py' },
+        path: { type: 'string', description: 'File path e.g. /root/Projects/app.py' },
         content: { type: 'string', description: 'File contents' },
-        openInEditor: { type: 'boolean', description: 'Open the file in Mousepad on screen (default false)' },
+        openInEditor: { type: 'boolean', description: 'Open the file in editor on screen (default false)' },
         openInNotepad: { type: 'boolean', description: 'Alias for openInEditor' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['path', 'content'],
     },
   },
   {
     name: 'file_delete',
-    description: 'Delete a file or directory on the Linux filesystem.',
+    description: 'Delete a file or directory on the filesystem.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Linux path to delete' },
+        path: { type: 'string', description: 'Path to delete' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['path'],
     },
   },
   {
     name: 'browser_navigate',
-    description: 'Open Chromium on the Linux desktop and navigate to any URL or local file.',
+    description: 'Open browser on the active desktop or connected device and navigate to any URL or local file.',
     inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'https://... URL or file:///... path' },
+        device: DEVICE_SELECTOR_PROP,
       },
       required: ['url'],
+    },
+  },
+  {
+    name: 'android_action',
+    description:
+      'Execute Android hardware and system commands via Termux:API (torch, vibrate, volume, brightness, toast, notify, speak, clipboard_get, clipboard_set, camera, battery, wifi, media, open_url, share, status) without ADB or Root.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: [
+            'torch',
+            'vibrate',
+            'volume',
+            'brightness',
+            'toast',
+            'notify',
+            'speak',
+            'clipboard_get',
+            'clipboard_set',
+            'camera',
+            'battery',
+            'wifi',
+            'media',
+            'open_url',
+            'share',
+            'status',
+          ],
+          description: 'Android system or hardware action',
+        },
+        value: { type: 'string', description: 'Optional action value or parameter e.g. on/off, up/down, duration, volume level' },
+        text: { type: 'string', description: 'Optional text for toast, notification, TTS speech, clipboard, or URL' },
+        device: { type: 'string', description: 'Target device ID, kind (android, pc), hostname, or "all" (default: active device)' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'unlock_pc',
+    description:
+      'Unlock a connected Windows PC lock screen (Win+L) by waking the lock curtain and typing the Windows PIN/password + Enter (requires JarvisUnlockService running on the PC).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pin: { type: 'string', description: 'Windows lock screen PIN or password to type' },
+        wake: { type: 'boolean', description: 'Wake the Windows lock curtain before typing PIN (default true)' },
+        sas: { type: 'boolean', description: 'Send Ctrl+Alt+Del (SAS) instead of typing PIN' },
+        device: DEVICE_SELECTOR_PROP,
+      },
     },
   },
   {
@@ -252,6 +322,7 @@ const MCP_TOOLS: McpToolDef[] = [
       type: 'object',
       properties: {
         ms: { type: 'number', description: 'Milliseconds to wait (default 1000, max 10000)' },
+        device: { type: 'string', description: 'Optional device selector when executing concurrently' },
       },
     },
   },
@@ -273,12 +344,20 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
   const started = Date.now();
   try {
     const target = realWin10Bridge.getExecutionTarget();
-    if (target === 'linux' && !realLinuxDesktop.getStatus().running) {
+    const deviceSelector = typeof args.device === 'string' && args.device.trim() ? args.device.trim() : undefined;
+    const requestedRealDevice =
+      Boolean(deviceSelector && deviceSelector.toLowerCase() !== 'linux') ||
+      name === 'android_action';
+
+    if (target === 'linux' && !requestedRealDevice && !realLinuxDesktop.getStatus().running) {
       await realLinuxDesktop.ensureStarted();
     }
 
+    const effectiveTarget =
+      requestedRealDevice && realWin10Bridge.getStatus().connected ? 'real-win10' : target;
+
     const mode = resolveMcpExecutionMode(
-      target,
+      effectiveTarget,
       realWin10Bridge.getStatus().connected,
       realLinuxDesktop.getStatus().running,
       name,
@@ -534,10 +613,12 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
         return { content: [{ type: 'text', text: msg }] };
       }
       if (name === 'desktop_screenshot') {
-        const frame = realWin10Bridge.getLatestFrame();
-        const status = realWin10Bridge.getStatus();
+        const matchedIds = realWin10Bridge.resolveDeviceIds(deviceSelector);
+        const targetDevId = matchedIds[0] || undefined;
+        const frame = realWin10Bridge.getLatestFrame(targetDevId);
+        const status = realWin10Bridge.getStatus(targetDevId);
         if (frame?.data) {
-          const summary = `Captured real Windows 10 Pro frame (${frame.width}x${frame.height})`;
+          const summary = `Captured real device frame (${frame.width}x${frame.height})`;
           desktopStore.logActivity('mcp', name, 'real-win10', summary, 'ok', Date.now() - started);
           return {
             content: [
@@ -546,6 +627,7 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
                 type: 'text',
                 text: JSON.stringify({
                   target: 'real-win10',
+                  deviceId: targetDevId || realWin10Bridge.getActiveDeviceId(),
                   hostname: status.hostname,
                   osVersion: status.osVersion,
                   screen: { width: frame.width, height: frame.height },
@@ -556,17 +638,30 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
           };
         }
       }
-      const agentOut = await realWin10Bridge.executeOnAgent(name, args);
+      const cleanArgs = { ...args };
+      delete cleanArgs.device;
+      const agentOut = await realWin10Bridge.executeOnAgent(
+        name,
+        cleanArgs,
+        deviceSelector || (name === 'android_action' ? 'android' : undefined),
+      );
+      const allFailed =
+        Array.isArray(agentOut) &&
+        agentOut.length > 0 &&
+        agentOut.every(
+          (item) => typeof item === 'object' && item !== null && (item as { ok?: unknown }).ok === false,
+        );
       const textOut = typeof agentOut === 'string' ? agentOut : JSON.stringify(agentOut, null, 2);
       desktopStore.logActivity(
         'mcp',
         name,
-        `[Real Win10] ${JSON.stringify(args).slice(0, 90)}`,
+        `[Real Device] ${JSON.stringify(args).slice(0, 90)}`,
         textOut.slice(0, 140),
-        'ok',
+        allFailed ? 'error' : 'ok',
         Date.now() - started,
       );
       return {
+        ...(allFailed ? { isError: true } : {}),
         content: [{ type: 'text', text: textOut }],
       };
     }
@@ -747,6 +842,17 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
         summary = `Drew ${points.length}-point stroke (${color})`;
         result = { content: [{ type: 'text', text: summary }] };
         break;
+      }
+      case 'unlock_pc': {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: 'unlock_pc faqat ulangan Windows PC (Win+L qulf ekrani) uchun ishlaydi.',
+            },
+          ],
+        };
       }
       default:
         return {

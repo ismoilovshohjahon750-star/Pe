@@ -4,6 +4,8 @@ export function buildCSharpPcAgentSource(wsUrl: string, token?: string | null): 
 
   return `// ClaudeWin 10 Pro / J.A.R.V.I.S. — Native Windows Background PC Agent (.NET 4.5+)
 // Compiled automatically to JarvisPcAgent.exe via built-in Windows csc.exe (C# 5 compatible)
+// Supports LocalSystem Windows Service (--service) -> Console Session SYSTEM Agent (--session-agent)
+// so Win+L (Winlogon) Lock Screen streams live and accepts PIN/password unlock without dropping connection.
 
 using System;
 using System.Collections.Generic;
@@ -14,45 +16,765 @@ using System.IO;
 using System.Net;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
+using System.ServiceProcess;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
-using System.Windows.Forms;
 
 namespace JarvisPcAgent
 {
     internal static class NativeWin32
     {
-        [DllImport("user32.dll")]
-        public static extern bool SetCursorPos(int X, int Y);
+        public const uint ES_CONTINUOUS = 0x80000000;
+        public const uint ES_SYSTEM_REQUIRED = 0x00000001;
 
-        [DllImport("user32.dll")]
-        public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+        public const int SM_CXSCREEN = 0;
+        public const int SM_CYSCREEN = 1;
 
-        [DllImport("user32.dll")]
-        public static extern bool SetProcessDPIAware();
+        public const int SRCCOPY = 0x00CC0020;
+        public const int CAPTUREBLT = 0x40000000;
+
+        public const int UOI_NAME = 2;
+        public const uint DESKTOP_READOBJECTS = 0x0001;
+        public const uint DESKTOP_CREATEWINDOW = 0x0002;
+        public const uint DESKTOP_CREATEMENU = 0x0004;
+        public const uint DESKTOP_HOOKCONTROL = 0x0008;
+        public const uint DESKTOP_JOURNALRECORD = 0x0010;
+        public const uint DESKTOP_JOURNALPLAYBACK = 0x0020;
+        public const uint DESKTOP_ENUMERATE = 0x0040;
+        public const uint DESKTOP_WRITEOBJECTS = 0x0080;
+        public const uint DESKTOP_SWITCHDESKTOP = 0x0100;
+        public const uint DESKTOP_ALL_ACCESS =
+            DESKTOP_READOBJECTS | DESKTOP_CREATEWINDOW | DESKTOP_CREATEMENU |
+            DESKTOP_HOOKCONTROL | DESKTOP_JOURNALRECORD | DESKTOP_JOURNALPLAYBACK |
+            DESKTOP_ENUMERATE | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP;
+
+        public const uint INPUT_MOUSE = 0;
+        public const uint INPUT_KEYBOARD = 1;
+
+        public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+        public const uint KEYEVENTF_KEYUP = 0x0002;
+        public const uint KEYEVENTF_UNICODE = 0x0004;
+        public const uint KEYEVENTF_SCANCODE = 0x0008;
 
         public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         public const uint MOUSEEVENTF_LEFTUP = 0x0004;
         public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
         public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
         public const uint MOUSEEVENTF_WHEEL = 0x0800;
+
+        public const uint TOKEN_ALL_ACCESS = 0x000F01FF;
+        public const uint MAXIMUM_ALLOWED = 0x02000000;
+        public const int SecurityImpersonation = 2;
+        public const int TokenPrimary = 1;
+        public const int TokenSessionId = 12;
+        public const uint CREATE_NO_WINDOW = 0x08000000;
+        public const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+        public const int STARTF_USESHOWWINDOW = 0x00000001;
+        public const short SW_HIDE = 0;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT
+        {
+            public int X;
+            public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct INPUT
+        {
+            public uint type;
+            public InputUnion U;
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        public struct InputUnion
+        {
+            [FieldOffset(0)] public MOUSEINPUT mi;
+            [FieldOffset(0)] public KEYBDINPUT ki;
+            [FieldOffset(0)] public HARDWAREINPUT hi;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MOUSEINPUT
+        {
+            public int dx;
+            public int dy;
+            public uint mouseData;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct KEYBDINPUT
+        {
+            public ushort wVk;
+            public ushort wScan;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct HARDWAREINPUT
+        {
+            public uint uMsg;
+            public ushort wParamL;
+            public ushort wParamH;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct STARTUPINFO
+        {
+            public int cb;
+            public string lpReserved;
+            public string lpDesktop;
+            public string lpTitle;
+            public int dwX;
+            public int dwY;
+            public int dwXSize;
+            public int dwYSize;
+            public int dwXCountChars;
+            public int dwYCountChars;
+            public int dwFillAttribute;
+            public int dwFlags;
+            public short wShowWindow;
+            public short cbReserved2;
+            public IntPtr lpReserved2;
+            public IntPtr hStdInput;
+            public IntPtr hStdOutput;
+            public IntPtr hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess;
+            public IntPtr hThread;
+            public int dwProcessId;
+            public int dwThreadId;
+        }
+
+        [DllImport("user32.dll")]
+        public static extern bool SetProcessDPIAware();
+
+        [DllImport("kernel32.dll")]
+        public static extern uint SetThreadExecutionState(uint esFlags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetThreadDesktop(IntPtr hDesktop);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool CloseDesktop(IntPtr hDesktop);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool GetUserObjectInformation(IntPtr hObj, int nIndex, byte[] pvInfo, int nLength, out int lpnLengthNeeded);
+
+        [DllImport("user32.dll")]
+        public static extern int GetSystemMetrics(int nIndex);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool DeleteDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int nWidth, int nHeight);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr SelectObject(IntPtr hdc, IntPtr hgdiobj);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool DeleteObject(IntPtr hObject);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool BitBlt(IntPtr hdcDest, int nXDest, int nYDest, int nWidth, int nHeight, IntPtr hdcSrc, int nXSrc, int nYSrc, int dwRop);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetCursorPos(out POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetCursorPos(int X, int Y);
+
+        [DllImport("user32.dll")]
+        public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+        [DllImport("user32.dll")]
+        public static extern short VkKeyScan(char ch);
+
+        [DllImport("user32.dll")]
+        public static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool LockWorkStation();
+
+        [DllImport("kernel32.dll")]
+        public static extern uint WTSGetActiveConsoleSessionId();
+
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        public static extern bool WTSQueryUserToken(uint SessionId, out IntPtr phToken);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool RevertToSelf();
+
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr GetCurrentProcess();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool DuplicateTokenEx(IntPtr hExistingToken, uint dwDesiredAccess, IntPtr lpTokenAttributes, int ImpersonationLevel, int TokenType, out IntPtr phNewToken);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool SetTokenInformation(IntPtr TokenHandle, int TokenInformationClass, ref uint TokenInformation, int TokenInformationLength);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool CreateProcessAsUser(
+            IntPtr hToken,
+            string lpApplicationName,
+            string lpCommandLine,
+            IntPtr lpProcessAttributes,
+            IntPtr lpThreadAttributes,
+            bool bInheritHandles,
+            uint dwCreationFlags,
+            IntPtr lpEnvironment,
+            string lpCurrentDirectory,
+            ref STARTUPINFO lpStartupInfo,
+            out PROCESS_INFORMATION lpProcessInformation);
+    }
+
+    internal static class DesktopHelper
+    {
+        public static bool SwitchThreadToInputDesktop(out string desktopName)
+        {
+            desktopName = "Default";
+            IntPtr hDesk = NativeWin32.OpenInputDesktop(0, false, NativeWin32.DESKTOP_ALL_ACCESS);
+            if (hDesk == IntPtr.Zero)
+            {
+                hDesk = NativeWin32.OpenInputDesktop(0, false, NativeWin32.DESKTOP_READOBJECTS | NativeWin32.DESKTOP_WRITEOBJECTS);
+            }
+            if (hDesk == IntPtr.Zero)
+            {
+                hDesk = NativeWin32.OpenInputDesktop(0, false, NativeWin32.DESKTOP_READOBJECTS);
+            }
+            if (hDesk == IntPtr.Zero)
+            {
+                desktopName = "Winlogon";
+                return false;
+            }
+
+            try
+            {
+                byte[] buf = new byte[256];
+                int needed = 0;
+                if (NativeWin32.GetUserObjectInformation(hDesk, NativeWin32.UOI_NAME, buf, buf.Length, out needed) && needed > 2)
+                {
+                    string parsed = Encoding.Unicode.GetString(buf, 0, needed).TrimEnd('\\0');
+                    if (!string.IsNullOrEmpty(parsed))
+                    {
+                        desktopName = parsed;
+                    }
+                }
+                return NativeWin32.SetThreadDesktop(hDesk);
+            }
+            finally
+            {
+                NativeWin32.CloseDesktop(hDesk);
+            }
+        }
+
+        public static bool IsLockDesktopName(string desktopName)
+        {
+            if (string.IsNullOrEmpty(desktopName)) return false;
+            return desktopName.Equals("Winlogon", StringComparison.OrdinalIgnoreCase)
+                || desktopName.Equals("Screen-saver", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static string LockWorkStationAsActiveUser()
+        {
+            uint sid = NativeWin32.WTSGetActiveConsoleSessionId();
+            IntPtr userToken = IntPtr.Zero;
+            if (sid != 0xFFFFFFFF && NativeWin32.WTSQueryUserToken(sid, out userToken))
+            {
+                try
+                {
+                    if (NativeWin32.ImpersonateLoggedOnUser(userToken))
+                    {
+                        try
+                        {
+                            if (NativeWin32.LockWorkStation())
+                            {
+                                return "Locked workstation (Win+L)";
+                            }
+                        }
+                        finally
+                        {
+                            NativeWin32.RevertToSelf();
+                        }
+                    }
+
+                    NativeWin32.STARTUPINFO si = new NativeWin32.STARTUPINFO();
+                    si.cb = Marshal.SizeOf(typeof(NativeWin32.STARTUPINFO));
+                    si.lpDesktop = "winsta0\\\\default";
+                    si.dwFlags = NativeWin32.STARTF_USESHOWWINDOW;
+                    si.wShowWindow = NativeWin32.SW_HIDE;
+                    NativeWin32.PROCESS_INFORMATION pi;
+                    string cmd = "rundll32.exe user32.dll,LockWorkStation";
+                    if (NativeWin32.CreateProcessAsUser(
+                        userToken,
+                        null,
+                        cmd,
+                        IntPtr.Zero,
+                        IntPtr.Zero,
+                        false,
+                        NativeWin32.CREATE_NO_WINDOW,
+                        IntPtr.Zero,
+                        null,
+                        ref si,
+                        out pi))
+                    {
+                        if (pi.hThread != IntPtr.Zero) NativeWin32.CloseHandle(pi.hThread);
+                        if (pi.hProcess != IntPtr.Zero) NativeWin32.CloseHandle(pi.hProcess);
+                        return "Locked workstation via user session (Win+L)";
+                    }
+                }
+                finally
+                {
+                    NativeWin32.CloseHandle(userToken);
+                }
+            }
+
+            if (NativeWin32.LockWorkStation())
+            {
+                return "Locked workstation (Win+L)";
+            }
+            return "LockWorkStation requested";
+        }
+    }
+
+    internal sealed class InputWorker
+    {
+        private sealed class WorkItem
+        {
+            public Func<object> Action;
+            public object Result;
+            public Exception Error;
+            public ManualResetEvent Done = new ManualResetEvent(false);
+        }
+
+        private readonly Queue<WorkItem> _queue = new Queue<WorkItem>();
+        private readonly object _sync = new object();
+        private readonly Thread _thread;
+
+        public InputWorker()
+        {
+            _thread = new Thread(RunLoop);
+            _thread.IsBackground = true;
+            _thread.Start();
+        }
+
+        public object Execute(Func<object> action)
+        {
+            WorkItem item = new WorkItem();
+            item.Action = action;
+            lock (_sync)
+            {
+                _queue.Enqueue(item);
+                Monitor.Pulse(_sync);
+            }
+            item.Done.WaitOne();
+            item.Done.Close();
+            if (item.Error != null)
+            {
+                throw item.Error;
+            }
+            return item.Result;
+        }
+
+        private void RunLoop()
+        {
+            while (true)
+            {
+                WorkItem item;
+                lock (_sync)
+                {
+                    while (_queue.Count == 0)
+                    {
+                        Monitor.Wait(_sync);
+                    }
+                    item = _queue.Dequeue();
+                }
+
+                try
+                {
+                    string deskName;
+                    DesktopHelper.SwitchThreadToInputDesktop(out deskName);
+                    item.Result = item.Action();
+                }
+                catch (Exception ex)
+                {
+                    item.Error = ex;
+                }
+                finally
+                {
+                    item.Done.Set();
+                }
+            }
+        }
+
+        private static NativeWin32.INPUT MakeKeyInput(ushort vk, ushort scan, uint flags)
+        {
+            NativeWin32.INPUT input = new NativeWin32.INPUT();
+            input.type = NativeWin32.INPUT_KEYBOARD;
+            input.U.ki = new NativeWin32.KEYBDINPUT();
+            input.U.ki.wVk = vk;
+            input.U.ki.wScan = scan;
+            input.U.ki.dwFlags = flags;
+            input.U.ki.time = 0;
+            input.U.ki.dwExtraInfo = IntPtr.Zero;
+            return input;
+        }
+
+        private static void SendSingleVk(ushort vk, bool extended)
+        {
+            ushort scan = (ushort)NativeWin32.MapVirtualKey(vk, 0);
+            uint downFlags = extended ? NativeWin32.KEYEVENTF_EXTENDEDKEY : 0;
+            uint upFlags = NativeWin32.KEYEVENTF_KEYUP | (extended ? NativeWin32.KEYEVENTF_EXTENDEDKEY : 0);
+            NativeWin32.INPUT[] inputs = new NativeWin32.INPUT[2];
+            inputs[0] = MakeKeyInput(vk, scan, downFlags);
+            inputs[1] = MakeKeyInput(vk, scan, upFlags);
+            NativeWin32.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(NativeWin32.INPUT)));
+        }
+
+        private static void SendKeyCombo(ushort modVk, ushort keyVk)
+        {
+            ushort modScan = (ushort)NativeWin32.MapVirtualKey(modVk, 0);
+            ushort keyScan = (ushort)NativeWin32.MapVirtualKey(keyVk, 0);
+            NativeWin32.INPUT[] inputs = new NativeWin32.INPUT[4];
+            inputs[0] = MakeKeyInput(modVk, modScan, 0);
+            inputs[1] = MakeKeyInput(keyVk, keyScan, 0);
+            inputs[2] = MakeKeyInput(keyVk, keyScan, NativeWin32.KEYEVENTF_KEYUP);
+            inputs[3] = MakeKeyInput(modVk, modScan, NativeWin32.KEYEVENTF_KEYUP);
+            NativeWin32.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(NativeWin32.INPUT)));
+        }
+
+        public static void TypeText(string text, bool enter)
+        {
+            if (!string.IsNullOrEmpty(text))
+            {
+                for (int i = 0; i < text.Length; i++)
+                {
+                    char ch = text[i];
+                    if (ch == '\\r') continue;
+                    if (ch == '\\n')
+                    {
+                        SendSingleVk(0x0D, false);
+                        Thread.Sleep(8);
+                        continue;
+                    }
+
+                    short vkScan = NativeWin32.VkKeyScan(ch);
+                    int shiftState = (vkScan >> 8) & 0xFF;
+                    if (vkScan != -1 && (shiftState == 0 || shiftState == 1))
+                    {
+                        ushort vk = (ushort)(vkScan & 0xFF);
+                        ushort scan = (ushort)NativeWin32.MapVirtualKey(vk, 0);
+                        if (shiftState == 1)
+                        {
+                            ushort shiftScan = (ushort)NativeWin32.MapVirtualKey(0x10, 0);
+                            NativeWin32.INPUT[] inputs = new NativeWin32.INPUT[4];
+                            inputs[0] = MakeKeyInput(0x10, shiftScan, 0);
+                            inputs[1] = MakeKeyInput(vk, scan, 0);
+                            inputs[2] = MakeKeyInput(vk, scan, NativeWin32.KEYEVENTF_KEYUP);
+                            inputs[3] = MakeKeyInput(0x10, shiftScan, NativeWin32.KEYEVENTF_KEYUP);
+                            NativeWin32.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(NativeWin32.INPUT)));
+                        }
+                        else
+                        {
+                            NativeWin32.INPUT[] inputs = new NativeWin32.INPUT[2];
+                            inputs[0] = MakeKeyInput(vk, scan, 0);
+                            inputs[1] = MakeKeyInput(vk, scan, NativeWin32.KEYEVENTF_KEYUP);
+                            NativeWin32.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(NativeWin32.INPUT)));
+                        }
+                    }
+                    else
+                    {
+                        NativeWin32.INPUT[] inputs = new NativeWin32.INPUT[2];
+                        inputs[0] = MakeKeyInput(0, (ushort)ch, NativeWin32.KEYEVENTF_UNICODE);
+                        inputs[1] = MakeKeyInput(0, (ushort)ch, NativeWin32.KEYEVENTF_UNICODE | NativeWin32.KEYEVENTF_KEYUP);
+                        NativeWin32.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(NativeWin32.INPUT)));
+                    }
+
+                    Thread.Sleep(8);
+                }
+            }
+
+            if (enter)
+            {
+                Thread.Sleep(15);
+                SendSingleVk(0x0D, false);
+            }
+        }
+
+        public static string SendKeyName(string key)
+        {
+            string k = string.IsNullOrEmpty(key) ? "Enter" : key;
+            if (k.Equals("Win+L", StringComparison.OrdinalIgnoreCase))
+            {
+                return DesktopHelper.LockWorkStationAsActiveUser();
+            }
+            if (k == "Enter" || k == "Return") { SendSingleVk(0x0D, false); return "Sent key " + k; }
+            if (k == "Space" || k == " ") { SendSingleVk(0x20, false); return "Sent key " + k; }
+            if (k == "Tab") { SendSingleVk(0x09, false); return "Sent key " + k; }
+            if (k == "Escape") { SendSingleVk(0x1B, false); return "Sent key " + k; }
+            if (k == "Backspace") { SendSingleVk(0x08, false); return "Sent key " + k; }
+            if (k == "Delete") { SendSingleVk(0x2E, true); return "Sent key " + k; }
+            if (k == "Home") { SendSingleVk(0x24, true); return "Sent key " + k; }
+            if (k == "End") { SendSingleVk(0x23, true); return "Sent key " + k; }
+            if (k == "PageUp") { SendSingleVk(0x21, true); return "Sent key " + k; }
+            if (k == "PageDown") { SendSingleVk(0x22, true); return "Sent key " + k; }
+            if (k == "ArrowLeft") { SendSingleVk(0x25, true); return "Sent key " + k; }
+            if (k == "ArrowUp") { SendSingleVk(0x26, true); return "Sent key " + k; }
+            if (k == "ArrowRight") { SendSingleVk(0x27, true); return "Sent key " + k; }
+            if (k == "ArrowDown") { SendSingleVk(0x28, true); return "Sent key " + k; }
+            if (k == "Win") { SendSingleVk(0x5B, true); return "Sent key " + k; }
+            if (k.Equals("Ctrl+S", StringComparison.OrdinalIgnoreCase)) { SendKeyCombo(0x11, 0x53); return "Sent key " + k; }
+            if (k.Equals("Ctrl+C", StringComparison.OrdinalIgnoreCase)) { SendKeyCombo(0x11, 0x43); return "Sent key " + k; }
+            if (k.Equals("Ctrl+V", StringComparison.OrdinalIgnoreCase)) { SendKeyCombo(0x11, 0x56); return "Sent key " + k; }
+            if (k.Equals("Ctrl+A", StringComparison.OrdinalIgnoreCase)) { SendKeyCombo(0x11, 0x41); return "Sent key " + k; }
+            if (k.Equals("Alt+F4", StringComparison.OrdinalIgnoreCase)) { SendKeyCombo(0x12, 0x73); return "Sent key " + k; }
+
+            if (k.Length == 1)
+            {
+                TypeText(k, false);
+                return "Sent key " + k;
+            }
+            SendSingleVk(0x0D, false);
+            return "Sent key " + k;
+        }
+    }
+
+    internal sealed class AgentWindowsService : ServiceBase
+    {
+        private Thread _supervisorThread;
+        private volatile bool _stopping;
+        private Process _childProcess;
+        private uint _childSessionId = 0xFFFFFFFF;
+
+        public AgentWindowsService()
+        {
+            ServiceName = "JarvisPcAgentService";
+        }
+
+        protected override void OnStart(string[] args)
+        {
+            _stopping = false;
+            _supervisorThread = new Thread(SupervisorLoop);
+            _supervisorThread.IsBackground = true;
+            _supervisorThread.Start();
+        }
+
+        protected override void OnStop()
+        {
+            _stopping = true;
+            KillChildProcess();
+        }
+
+        private void KillChildProcess()
+        {
+            try
+            {
+                if (_childProcess != null && !_childProcess.HasExited)
+                {
+                    _childProcess.Kill();
+                }
+            }
+            catch
+            {
+            }
+            _childProcess = null;
+            _childSessionId = 0xFFFFFFFF;
+        }
+
+        private void SupervisorLoop()
+        {
+            string exePath = Process.GetCurrentProcess().MainModule.FileName;
+            string workDir = Path.GetDirectoryName(exePath);
+
+            while (!_stopping)
+            {
+                try
+                {
+                    uint activeSid = NativeWin32.WTSGetActiveConsoleSessionId();
+                    bool needsRestart = false;
+
+                    if (_childProcess == null)
+                    {
+                        needsRestart = true;
+                    }
+                    else
+                    {
+                        try
+                        {
+                            if (_childProcess.HasExited || _childSessionId != activeSid)
+                            {
+                                needsRestart = true;
+                            }
+                        }
+                        catch
+                        {
+                            needsRestart = true;
+                        }
+                    }
+
+                    if (needsRestart && activeSid != 0xFFFFFFFF)
+                    {
+                        KillChildProcess();
+                        SpawnSessionAgent(exePath, workDir, activeSid);
+                    }
+                }
+                catch
+                {
+                }
+
+                Thread.Sleep(1000);
+            }
+        }
+
+        private void SpawnSessionAgent(string exePath, string workDir, uint sessionId)
+        {
+            IntPtr hToken = IntPtr.Zero;
+            IntPtr hDupToken = IntPtr.Zero;
+            try
+            {
+                if (!NativeWin32.OpenProcessToken(NativeWin32.GetCurrentProcess(), NativeWin32.TOKEN_ALL_ACCESS, out hToken))
+                {
+                    return;
+                }
+                if (!NativeWin32.DuplicateTokenEx(
+                    hToken,
+                    NativeWin32.MAXIMUM_ALLOWED,
+                    IntPtr.Zero,
+                    NativeWin32.SecurityImpersonation,
+                    NativeWin32.TokenPrimary,
+                    out hDupToken))
+                {
+                    return;
+                }
+                uint sid = sessionId;
+                if (!NativeWin32.SetTokenInformation(hDupToken, NativeWin32.TokenSessionId, ref sid, sizeof(uint)))
+                {
+                    return;
+                }
+
+                NativeWin32.STARTUPINFO si = new NativeWin32.STARTUPINFO();
+                si.cb = Marshal.SizeOf(typeof(NativeWin32.STARTUPINFO));
+                si.lpDesktop = "winsta0\\\\default";
+                si.dwFlags = NativeWin32.STARTF_USESHOWWINDOW;
+                si.wShowWindow = NativeWin32.SW_HIDE;
+
+                NativeWin32.PROCESS_INFORMATION pi;
+                string cmdLine = "\\"" + exePath + "\\" --session-agent";
+                if (NativeWin32.CreateProcessAsUser(
+                    hDupToken,
+                    exePath,
+                    cmdLine,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    false,
+                    NativeWin32.CREATE_NO_WINDOW | NativeWin32.CREATE_UNICODE_ENVIRONMENT,
+                    IntPtr.Zero,
+                    workDir,
+                    ref si,
+                    out pi))
+                {
+                    if (pi.hThread != IntPtr.Zero) NativeWin32.CloseHandle(pi.hThread);
+                    if (pi.hProcess != IntPtr.Zero) NativeWin32.CloseHandle(pi.hProcess);
+                    _childSessionId = sessionId;
+                    try
+                    {
+                        _childProcess = Process.GetProcessById(pi.dwProcessId);
+                    }
+                    catch
+                    {
+                        _childProcess = null;
+                    }
+                }
+            }
+            finally
+            {
+                if (hDupToken != IntPtr.Zero) NativeWin32.CloseHandle(hDupToken);
+                if (hToken != IntPtr.Zero) NativeWin32.CloseHandle(hToken);
+            }
+        }
     }
 
     internal static class Program
     {
         private static readonly string WsUri = ${escapedWsUrl};
         private static readonly SemaphoreSlim SendLock = new SemaphoreSlim(1, 1);
+        private static readonly InputWorker Input = new InputWorker();
         private static Mutex _singleInstanceMutex;
 
-        [STAThread]
         private static void Main(string[] args)
         {
+            bool isService = false;
+            bool isSessionAgent = false;
+            if (args != null)
+            {
+                for (int i = 0; i < args.Length; i++)
+                {
+                    if (string.Equals(args[i], "--service", StringComparison.OrdinalIgnoreCase)) isService = true;
+                    if (string.Equals(args[i], "--session-agent", StringComparison.OrdinalIgnoreCase)) isSessionAgent = true;
+                }
+            }
+
+            if (isService)
+            {
+                bool svcNew;
+                _singleInstanceMutex = new Mutex(true, "Global\\\\JarvisPcAgentServiceMutex", out svcNew);
+                if (!svcNew) return;
+                ServiceBase.Run(new AgentWindowsService());
+                return;
+            }
+
             bool createdNew;
-            _singleInstanceMutex = new Mutex(true, "Local\\\\JarvisPcAgentSingleInstance", out createdNew);
+            string mutexName = isSessionAgent ? "Global\\\\JarvisPcAgentSessionMutex" : "Local\\\\JarvisPcAgentSingleInstance";
+            _singleInstanceMutex = new Mutex(true, mutexName, out createdNew);
             if (!createdNew)
             {
-                return;
+                try
+                {
+                    if (!_singleInstanceMutex.WaitOne(2500))
+                    {
+                        return;
+                    }
+                }
+                catch
+                {
+                    return;
+                }
             }
 
             try
@@ -63,41 +785,58 @@ namespace JarvisPcAgent
             {
             }
 
+            try
+            {
+                NativeWin32.SetThreadExecutionState(NativeWin32.ES_CONTINUOUS | NativeWin32.ES_SYSTEM_REQUIRED);
+            }
+            catch
+            {
+            }
+
             ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
 
+            int backoffMs = 500;
             while (true)
             {
                 try
                 {
-                    RunSessionLoop();
+                    NativeWin32.SetThreadExecutionState(NativeWin32.ES_CONTINUOUS | NativeWin32.ES_SYSTEM_REQUIRED);
+                    bool connected = RunSessionLoop();
+                    if (connected)
+                    {
+                        backoffMs = 500;
+                    }
                 }
                 catch
                 {
                 }
-                Thread.Sleep(3000);
+                Thread.Sleep(backoffMs);
+                backoffMs = Math.Min(3000, backoffMs * 2);
             }
         }
 
-        private static void RunSessionLoop()
+        private static bool RunSessionLoop()
         {
+            bool established = false;
             using (ClientWebSocket ws = new ClientWebSocket())
             {
-                ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+                ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(8);
                 CancellationTokenSource cts = new CancellationTokenSource();
                 ws.ConnectAsync(new Uri(WsUri), cts.Token).GetAwaiter().GetResult();
 
                 JavaScriptSerializer json = new JavaScriptSerializer();
                 json.MaxJsonLength = 32 * 1024 * 1024;
 
-                Rectangle bounds = GetScreenBoundsSafe();
+                Size screenSize = GetScreenSizeSafe();
                 Dictionary<string, object> hello = new Dictionary<string, object>();
                 hello["type"] = "agent:hello";
                 hello["hostname"] = Environment.MachineName;
                 hello["osVersion"] = Environment.OSVersion.VersionString;
                 hello["username"] = Environment.UserName;
-                hello["screenWidth"] = bounds.Width;
-                hello["screenHeight"] = bounds.Height;
+                hello["screenWidth"] = screenSize.Width;
+                hello["screenHeight"] = screenSize.Height;
                 SendText(ws, json.Serialize(hello), cts.Token);
+                established = true;
 
                 Thread frameThread = new Thread(delegate()
                 {
@@ -105,11 +844,13 @@ namespace JarvisPcAgent
                     {
                         try
                         {
+                            NativeWin32.SetThreadExecutionState(NativeWin32.ES_CONTINUOUS | NativeWin32.ES_SYSTEM_REQUIRED);
                             string payload = BuildFrameJson(json);
                             SendText(ws, payload, cts.Token);
                         }
                         catch
                         {
+                            try { cts.Cancel(); } catch { }
                             break;
                         }
                         Thread.Sleep(350);
@@ -119,7 +860,7 @@ namespace JarvisPcAgent
                 frameThread.Start();
 
                 byte[] buffer = new byte[65536];
-                while (ws.State == WebSocketState.Open)
+                while (!cts.IsCancellationRequested && ws.State == WebSocketState.Open)
                 {
                     using (MemoryStream ms = new MemoryStream())
                     {
@@ -131,7 +872,7 @@ namespace JarvisPcAgent
                             if (res.MessageType == WebSocketMessageType.Close)
                             {
                                 cts.Cancel();
-                                return;
+                                return established;
                             }
                             if (res.Count > 0)
                             {
@@ -147,6 +888,7 @@ namespace JarvisPcAgent
 
                 cts.Cancel();
             }
+            return established;
         }
 
         private static void HandleIncomingMessage(ClientWebSocket ws, JavaScriptSerializer json, string rawMsg, CancellationToken token)
@@ -209,16 +951,13 @@ namespace JarvisPcAgent
             }
         }
 
-        private static Rectangle GetScreenBoundsSafe()
+        private static Size GetScreenSizeSafe()
         {
-            try
-            {
-                return Screen.PrimaryScreen.Bounds;
-            }
-            catch
-            {
-                return new Rectangle(0, 0, 1280, 720);
-            }
+            int w = NativeWin32.GetSystemMetrics(NativeWin32.SM_CXSCREEN);
+            int h = NativeWin32.GetSystemMetrics(NativeWin32.SM_CYSCREEN);
+            if (w <= 0) w = 1280;
+            if (h <= 0) h = 720;
+            return new Size(w, h);
         }
 
         private static ImageCodecInfo GetJpegEncoder()
@@ -231,46 +970,86 @@ namespace JarvisPcAgent
             return null;
         }
 
+        private static byte[] CaptureDesktopJpeg(out int w, out int h, out bool isLocked, out string desktopName)
+        {
+            bool switched = DesktopHelper.SwitchThreadToInputDesktop(out desktopName);
+            isLocked = DesktopHelper.IsLockDesktopName(desktopName);
+            Size sz = GetScreenSizeSafe();
+            w = sz.Width;
+            h = sz.Height;
+
+            if (switched)
+            {
+                IntPtr hdcScreen = IntPtr.Zero;
+                IntPtr hdcMem = IntPtr.Zero;
+                IntPtr hBmp = IntPtr.Zero;
+                IntPtr hOld = IntPtr.Zero;
+                try
+                {
+                    hdcScreen = NativeWin32.GetDC(IntPtr.Zero);
+                    if (hdcScreen != IntPtr.Zero)
+                    {
+                        hdcMem = NativeWin32.CreateCompatibleDC(hdcScreen);
+                        hBmp = NativeWin32.CreateCompatibleBitmap(hdcScreen, w, h);
+                        if (hdcMem != IntPtr.Zero && hBmp != IntPtr.Zero)
+                        {
+                            hOld = NativeWin32.SelectObject(hdcMem, hBmp);
+                            bool bltOk = NativeWin32.BitBlt(hdcMem, 0, 0, w, h, hdcScreen, 0, 0, NativeWin32.SRCCOPY | NativeWin32.CAPTUREBLT);
+                            NativeWin32.SelectObject(hdcMem, hOld);
+                            hOld = IntPtr.Zero;
+                            if (bltOk)
+                            {
+                                using (Bitmap bmp = Image.FromHbitmap(hBmp))
+                                {
+                                    return EncodeJpeg(bmp, 55L);
+                                }
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+                finally
+                {
+                    if (hOld != IntPtr.Zero && hdcMem != IntPtr.Zero) NativeWin32.SelectObject(hdcMem, hOld);
+                    if (hBmp != IntPtr.Zero) NativeWin32.DeleteObject(hBmp);
+                    if (hdcMem != IntPtr.Zero) NativeWin32.DeleteDC(hdcMem);
+                    if (hdcScreen != IntPtr.Zero) NativeWin32.ReleaseDC(IntPtr.Zero, hdcScreen);
+                }
+            }
+
+            isLocked = true;
+            w = 960;
+            h = 540;
+            using (Bitmap lockedBmp = new Bitmap(w, h))
+            using (Graphics g = Graphics.FromImage(lockedBmp))
+            using (SolidBrush bg = new SolidBrush(Color.FromArgb(7, 11, 20)))
+            using (SolidBrush fg = new SolidBrush(Color.FromArgb(203, 213, 225)))
+            using (SolidBrush accent = new SolidBrush(Color.FromArgb(56, 189, 248)))
+            using (Font titleFont = new Font("Segoe UI", 20, FontStyle.Bold))
+            using (Font subFont = new Font("Segoe UI", 12, FontStyle.Regular))
+            {
+                g.FillRectangle(bg, 0, 0, w, h);
+                g.DrawString("PC QULFLANGAN (Win+L)", titleFont, accent, 60, 190);
+                g.DrawString("Aloqa faol. Jonli Winlogon ekrani va PIN/parol kiritish uchun", subFont, fg, 60, 242);
+                g.DrawString("JarvisPcAgent-Setup.bat ni Administrator (Servis) sifatida o'rnating.", subFont, fg, 60, 274);
+                return EncodeJpeg(lockedBmp, 55L);
+            }
+        }
+
         private static string BuildFrameJson(JavaScriptSerializer json)
         {
-            Rectangle bounds = GetScreenBoundsSafe();
-            int w = bounds.Width > 0 ? bounds.Width : 1280;
-            int h = bounds.Height > 0 ? bounds.Height : 720;
-            byte[] jpegBytes;
+            int w;
+            int h;
+            bool isLocked;
+            string desktopName;
+            byte[] jpegBytes = CaptureDesktopJpeg(out w, out h, out isLocked, out desktopName);
 
+            NativeWin32.POINT cursor = new NativeWin32.POINT();
             try
             {
-                using (Bitmap bmp = new Bitmap(w, h))
-                using (Graphics g = Graphics.FromImage(bmp))
-                {
-                    g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
-                    jpegBytes = EncodeJpeg(bmp, 55L);
-                }
-            }
-            catch
-            {
-                w = 960;
-                h = 540;
-                using (Bitmap lockedBmp = new Bitmap(w, h))
-                using (Graphics g = Graphics.FromImage(lockedBmp))
-                using (SolidBrush bg = new SolidBrush(Color.FromArgb(7, 11, 20)))
-                using (SolidBrush fg = new SolidBrush(Color.FromArgb(203, 213, 225)))
-                using (SolidBrush accent = new SolidBrush(Color.FromArgb(56, 189, 248)))
-                using (Font titleFont = new Font("Segoe UI", 20, FontStyle.Bold))
-                using (Font subFont = new Font("Segoe UI", 12, FontStyle.Regular))
-                {
-                    g.FillRectangle(bg, 0, 0, w, h);
-                    g.DrawString("PC QULFLANGAN (Win+L)", titleFont, accent, 60, 200);
-                    g.DrawString("Fonda aloqa faol: run_powershell, run_bash va file_* buyruqlari ishlayapti.", subFont, fg, 60, 250);
-                    g.DrawString("Jonli ekran va sichqoncha uchun kompyuter qulfini oching.", subFont, fg, 60, 285);
-                    jpegBytes = EncodeJpeg(lockedBmp, 55L);
-                }
-            }
-
-            Point cursor = Point.Empty;
-            try
-            {
-                cursor = Cursor.Position;
+                NativeWin32.GetCursorPos(out cursor);
             }
             catch
             {
@@ -286,6 +1065,8 @@ namespace JarvisPcAgent
             frame["cursorX"] = cursor.X;
             frame["cursorY"] = cursor.Y;
             frame["timestamp"] = ts;
+            frame["locked"] = isLocked;
+            frame["desktopName"] = desktopName;
             return json.Serialize(frame);
         }
 
@@ -364,32 +1145,14 @@ namespace JarvisPcAgent
             }
         }
 
-        private static string EscapeSendKeys(string text)
-        {
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < text.Length; i++)
-            {
-                char ch = text[i];
-                if (ch == '+' || ch == '^' || ch == '%' || ch == '~' || ch == '(' || ch == ')' || ch == '{' || ch == '}' || ch == '[' || ch == ']')
-                {
-                    sb.Append('{').Append(ch).Append('}');
-                }
-                else
-                {
-                    sb.Append(ch);
-                }
-            }
-            return sb.ToString();
-        }
-
         private static object ExecuteTool(string tool, Dictionary<string, object> args, JavaScriptSerializer json)
         {
             if (tool == "desktop_screenshot")
             {
-                Rectangle bounds = GetScreenBoundsSafe();
+                Size sz = GetScreenSizeSafe();
                 Dictionary<string, object> res = new Dictionary<string, object>();
-                res["width"] = bounds.Width;
-                res["height"] = bounds.Height;
+                res["width"] = sz.Width;
+                res["height"] = sz.Height;
                 res["note"] = "Captured live real Windows PC frame (.exe)";
                 return res;
             }
@@ -398,8 +1161,11 @@ namespace JarvisPcAgent
             {
                 int x = GetInt(args, "x", 0);
                 int y = GetInt(args, "y", 0);
-                NativeWin32.SetCursorPos(x, y);
-                return "Moved cursor to (" + x + ", " + y + ")";
+                return Input.Execute(delegate
+                {
+                    NativeWin32.SetCursorPos(x, y);
+                    return "Moved cursor to (" + x + ", " + y + ")";
+                });
             }
 
             if (tool == "desktop_click")
@@ -407,27 +1173,30 @@ namespace JarvisPcAgent
                 int x = GetInt(args, "x", 0);
                 int y = GetInt(args, "y", 0);
                 string btn = GetStr(args, "button", "left");
-                NativeWin32.SetCursorPos(x, y);
-                Thread.Sleep(40);
-                if (btn == "right")
+                return Input.Execute(delegate
                 {
-                    NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, UIntPtr.Zero);
-                    NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_RIGHTUP, 0, 0, 0, UIntPtr.Zero);
-                }
-                else if (btn == "double")
-                {
-                    NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
-                    NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
-                    Thread.Sleep(60);
-                    NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
-                    NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
-                }
-                else
-                {
-                    NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
-                    NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
-                }
-                return "Clicked " + btn + " at (" + x + ", " + y + ")";
+                    NativeWin32.SetCursorPos(x, y);
+                    Thread.Sleep(35);
+                    if (btn == "right")
+                    {
+                        NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, UIntPtr.Zero);
+                        NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_RIGHTUP, 0, 0, 0, UIntPtr.Zero);
+                    }
+                    else if (btn == "double")
+                    {
+                        NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+                        NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+                        Thread.Sleep(60);
+                        NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+                        NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+                    }
+                    else
+                    {
+                        NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+                        NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+                    }
+                    return "Clicked " + btn + " at (" + x + ", " + y + ")";
+                });
             }
 
             if (tool == "desktop_scroll")
@@ -437,37 +1206,32 @@ namespace JarvisPcAgent
                 int clicks = GetInt(args, "clicks", 3);
                 string dir = GetStr(args, "direction", "down");
                 int delta = (dir == "up") ? (120 * clicks) : (-120 * clicks);
-                NativeWin32.SetCursorPos(x, y);
-                NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_WHEEL, 0, 0, unchecked((uint)delta), UIntPtr.Zero);
-                return "Scrolled " + dir + " at (" + x + ", " + y + ")";
+                return Input.Execute(delegate
+                {
+                    NativeWin32.SetCursorPos(x, y);
+                    NativeWin32.mouse_event(NativeWin32.MOUSEEVENTF_WHEEL, 0, 0, unchecked((uint)delta), UIntPtr.Zero);
+                    return "Scrolled " + dir + " at (" + x + ", " + y + ")";
+                });
             }
 
             if (tool == "desktop_type")
             {
                 string txt = GetStr(args, "text", "");
-                SendKeys.SendWait(EscapeSendKeys(txt));
-                if (GetBool(args, "enter"))
+                bool enter = GetBool(args, "enter");
+                return Input.Execute(delegate
                 {
-                    SendKeys.SendWait("{ENTER}");
-                }
-                return "Typed " + txt.Length + " chars";
+                    InputWorker.TypeText(txt, enter);
+                    return "Typed " + txt.Length + " chars";
+                });
             }
 
             if (tool == "desktop_key")
             {
                 string k = GetStr(args, "key", "Enter");
-                string mapped = k;
-                if (k == "Enter" || k == "Return") mapped = "{ENTER}";
-                else if (k == "Tab") mapped = "{TAB}";
-                else if (k == "Escape") mapped = "{ESC}";
-                else if (k == "Backspace") mapped = "{BACKSPACE}";
-                else if (k == "Ctrl+S") mapped = "^s";
-                else if (k == "Ctrl+C") mapped = "^c";
-                else if (k == "Ctrl+V") mapped = "^v";
-                else if (k == "Alt+F4") mapped = "%{F4}";
-                else if (k == "Win") mapped = "^{ESC}";
-                SendKeys.SendWait(mapped);
-                return "Sent key " + k;
+                return Input.Execute(delegate
+                {
+                    return InputWorker.SendKeyName(k);
+                });
             }
 
             if (tool == "browser_navigate")
@@ -583,7 +1347,9 @@ export function buildExeBuilderBatchScript(baseHttpOrigin: string): string {
   const csUrl = `${baseHttpOrigin}/api/real-pc-agent.cs`;
   return `@echo off
 setlocal
-title JarvisPcAgent.exe — Builder & Background Launcher
+title JarvisPcAgent.exe — Builder & Win+L Service Installer
+
+if "%~1"=="--install-svc" goto :INSTALL_SVC
 
 set "TARGET_DIR=%USERPROFILE%\\JarvisAgent"
 if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
@@ -611,22 +1377,55 @@ if not exist "%CSC%" (
 
 echo [2/3] Eski jarayon to'xtatilmoqda va JarvisPcAgent.exe tuzilmoqda...
 taskkill /F /IM JarvisPcAgent.exe >nul 2>&1
-"%CSC%" /nologo /target:winexe /optimize+ /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll /out:"%EXE_FILE%" "%CS_FILE%"
+"%CSC%" /nologo /target:winexe /optimize+ /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll /r:System.ServiceProcess.dll /out:"%EXE_FILE%" "%CS_FILE%"
 if errorlevel 1 (
   echo XATO: .exe kompilyatsiya qilinmadi.
   pause
   exit /b 1
 )
 
-echo [3/3] JarvisPcAgent.exe fonda ishga tushirilmoqda...
-start "" "%EXE_FILE%"
+echo [3/3] Win+L qulf ekrani uchun LocalSystem servisi o'rnatilmoqda...
+net session >nul 2>&1
+if errorlevel 1 (
+  powershell -NoProfile -Command "try { Start-Process -FilePath '%~f0' -ArgumentList '--install-svc', ('\"' + $env:EXE_FILE + '\"') -Verb RunAs -Wait } catch { exit 1 }"
+) else (
+  call :DO_INSTALL_SVC "%EXE_FILE%"
+)
 
-echo.
-echo TAYYOR! %EXE_FILE% fonda ishlamoqda (konsol oynasisiz).
-echo Avto-ishga tushishga (Windows Startup) qo'shish uchun:
-echo   copy /Y "%EXE_FILE%" "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\"
-echo.
+sc query JarvisPcAgentService 2>nul | findstr /I "RUNNING" >nul
+if not errorlevel 1 (
+  echo.
+  echo TAYYOR! JarvisPcAgentService ^(LocalSystem^) fonda ishlamoqda.
+  echo Win+L bosilganda ham aloqa uzilmaydi, qulf ekrani ko'rinadi va PIN/parol bilan ochish ishlaydi.
+  timeout /t 4 >nul
+  exit /b 0
+)
+
+echo Servis o'rnatilmadi (UAC rad etildi). Oddiy foydalanuvchi rejimida ishga tushirilmoqda...
+start "" "%EXE_FILE%"
+echo TAYYOR! %EXE_FILE% fonda ishlamoqda.
 timeout /t 4 >nul
+exit /b 0
+
+:INSTALL_SVC
+call :DO_INSTALL_SVC "%~2"
+exit /b 0
+
+:DO_INSTALL_SVC
+set "SRC_EXE=%~1"
+set "SVC_DIR=%ProgramData%\\JarvisAgent"
+if not exist "%SVC_DIR%" mkdir "%SVC_DIR%"
+set "SVC_EXE=%SVC_DIR%\\JarvisPcAgent.exe"
+sc stop JarvisPcAgentService >nul 2>&1
+timeout /t 1 >nul
+taskkill /F /IM JarvisPcAgent.exe >nul 2>&1
+copy /Y "%SRC_EXE%" "%SVC_EXE%" >nul
+sc delete JarvisPcAgentService >nul 2>&1
+timeout /t 1 >nul
+sc create JarvisPcAgentService binPath= "\\"%SVC_EXE%\\" --service" start= auto DisplayName= "Jarvis PC Live Agent" >nul
+sc description JarvisPcAgentService "Jarvis Real PC Live Stream and Win+L Lock Screen Bridge" >nul
+sc failure JarvisPcAgentService reset= 60 actions= restart/2000/restart/2000/restart/5000 >nul
+sc start JarvisPcAgentService >nul
 exit /b 0
 `;
 }

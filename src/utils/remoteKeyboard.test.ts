@@ -68,4 +68,6 @@ test('resolveKeyboardLockedPortrait freezes portrait rotation while keyboard is 
   assert.equal(resolveKeyboardLockedPortrait(true, 800, 360, false, true), false);
   // When rotation is disallowed (e.g. J.A.R.V.I.S. open), always false
   assert.equal(resolveKeyboardLockedPortrait(false, 360, 752, true, true), false);
+  // Portrait remote stream (e.g. Android 540x960 or 1080x2400) should NOT be rotated sideways
+  assert.equal(resolveKeyboardLockedPortrait(true, 360, 752, false, false, 540, 960), false);
 });

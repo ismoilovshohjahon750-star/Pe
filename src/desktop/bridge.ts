@@ -2,6 +2,9 @@ export type ExecutionTarget = 'linux' | 'sandbox' | 'real-win10';
 
 export interface RealAgentStatus {
   connected: boolean;
+  reconnecting?: boolean;
+  locked?: boolean;
+  desktopName?: string | null;
   hostname: string | null;
   osVersion: string | null;
   username: string | null;
@@ -20,6 +23,8 @@ export interface RealAgentFrame {
   cursorX: number;
   cursorY: number;
   timestamp: number;
+  locked?: boolean;
+  desktopName?: string | null;
 }
 
 export interface LinuxDesktopStatus {
@@ -33,9 +38,14 @@ export interface LinuxDesktopStatus {
   error: string | null;
 }
 
+export const REAL_AGENT_RECONNECT_GRACE_MS = 12000;
+
 export function createInitialRealAgentStatus(): RealAgentStatus {
   return {
     connected: false,
+    reconnecting: false,
+    locked: false,
+    desktopName: null,
     hostname: null,
     osVersion: null,
     username: null,
@@ -45,6 +55,21 @@ export function createInitialRealAgentStatus(): RealAgentStatus {
     lastFrameAt: null,
     fps: 0,
   };
+}
+
+export function createReconnectingAgentStatus(prev: RealAgentStatus): RealAgentStatus {
+  return {
+    ...prev,
+    connected: prev.connected,
+    reconnecting: true,
+    fps: 0,
+  };
+}
+
+export function isWinLockShortcut(key: string, metaKey: boolean, ctrlKey: boolean, altKey: boolean): boolean {
+  const lower = key.toLowerCase();
+  if (lower !== 'l') return false;
+  return (metaKey && !ctrlKey && !altKey) || (ctrlKey && altKey && !metaKey);
 }
 
 export function createInitialLinuxStatus(): LinuxDesktopStatus {
