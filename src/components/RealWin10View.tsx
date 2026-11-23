@@ -23,6 +23,7 @@ interface RealWin10ViewProps {
   onScrollAt: (x: number, y: number, deltaY: number) => void;
   onTypeText: (text: string, enter: boolean) => void;
   onPressKey: (key: string) => void;
+  onUnlockPc?: (payload: { pin?: string; wake?: boolean; sas?: boolean }) => Promise<{ ok: boolean; message?: string; error?: string }>;
 }
 
 const SPECIAL_KEY_MAP: Record<string, string> = {
@@ -49,6 +50,7 @@ export function RealWin10View({
   onScrollAt,
   onTypeText,
   onPressKey,
+  onUnlockPc,
 }: RealWin10ViewProps) {
   const lastWheelAt = useRef(0);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -56,6 +58,9 @@ export function RealWin10View({
   const [keyboardFocused, setKeyboardFocused] = useState(false);
   const [unlockCode, setUnlockCode] = useState('');
   const [showCode, setShowCode] = useState(false);
+  const [manualUnlockBar, setManualUnlockBar] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
+  const [unlockStatus, setUnlockStatus] = useState<string | null>(null);
   const prevPortraitRef = useRef(false);
   const [boxSize, setBoxSize] = useState({ width: 1280, height: 720 });
 
@@ -160,11 +165,28 @@ export function RealWin10View({
     }
   };
 
-  const handleUnlockSubmit = (e: FormEvent<HTMLFormElement>) => {
+  const shouldShowUnlockBar = isLocked || manualUnlockBar;
+
+  const handleUnlockSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!unlockCode) return;
-    onTypeText(unlockCode, true);
-    setUnlockCode('');
+    if (!unlockCode || unlocking) return;
+    setUnlocking(true);
+    setUnlockStatus('Yuborilmoqda...');
+    try {
+      if (onUnlockPc) {
+        const res = await onUnlockPc({ pin: unlockCode, wake: true });
+        setUnlockStatus(res.ok ? 'PIN yuborildi!' : (res.error || 'Xatolik'));
+      } else {
+        onTypeText(unlockCode, true);
+        setUnlockStatus('PIN yuborildi');
+      }
+      setUnlockCode('');
+    } catch {
+      setUnlockStatus('Aloqada xatolik');
+    } finally {
+      setUnlocking(false);
+      setTimeout(() => setUnlockStatus(null), 3500);
+    }
   };
 
   return (
@@ -230,7 +252,7 @@ export function RealWin10View({
             </div>
           )}
 
-          {isLocked && (
+          {shouldShowUnlockBar && (
             <form
               onSubmit={handleUnlockSubmit}
               onKeyDown={(e) => e.stopPropagation()}
@@ -256,7 +278,8 @@ export function RealWin10View({
                   placeholder="PIN yoki parol..."
                   aria-label="PIN yoki parol"
                   autoComplete="off"
-                  className="w-full pl-3 pr-8 py-1.5 rounded-xl bg-black/40 border border-white/20 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:border-cyan-300/60"
+                  disabled={unlocking}
+                  className="w-full pl-3 pr-8 py-1.5 rounded-xl bg-black/40 border border-white/20 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:border-cyan-300/60 disabled:opacity-60"
                 />
                 <button
                   type="button"
@@ -270,31 +293,55 @@ export function RealWin10View({
 
               <button
                 type="submit"
-                disabled={!unlockCode}
+                disabled={!unlockCode || unlocking}
                 aria-label="Kodni yuborib ochish"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/30 hover:bg-cyan-500/45 disabled:opacity-45 border border-cyan-300/50 text-xs font-semibold text-white whitespace-nowrap cursor-pointer transition-colors"
               >
                 <Unlock className="w-3.5 h-3.5" strokeWidth={1.75} />
-                <span>Ochish</span>
+                <span>{unlocking ? 'Ochilmoqda...' : 'Ochish'}</span>
               </button>
+
+              {unlockStatus && (
+                <span className="text-[10px] text-cyan-300 font-medium px-1">
+                  {unlockStatus}
+                </span>
+              )}
             </form>
           )}
 
-          <button
-            type="button"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => onPressKey('Win+L')}
-            aria-label="PC ni qulflash (Win+L)"
-            title="PC ni qulflash (Win+L)"
-            className={`absolute bottom-3 right-14 z-20 inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full border text-[11px] font-medium transition-all duration-150 cursor-pointer ${
-              isLocked
-                ? 'bg-cyan-500/30 border-cyan-300/70 text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.4)]'
-                : 'bg-[#0F172A]/85 supports-[backdrop-filter]:bg-white/10 supports-[backdrop-filter]:backdrop-blur-xl border-white/25 text-white/85 hover:text-white hover:bg-white/20 shadow-[0_4px_14px_rgba(0,0,0,0.45)]'
-            }`}
-          >
-            <Lock className="w-3.5 h-3.5" strokeWidth={1.75} />
-            <span>Win+L</span>
-          </button>
+          <div className="absolute bottom-3 right-14 z-20 flex items-center gap-1.5">
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setManualUnlockBar((prev) => !prev)}
+              aria-label="PIN kiritish panelini ochish/yopish"
+              title="PIN kiritish panelini ochish/yopish"
+              className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full border text-[11px] font-medium transition-all duration-150 cursor-pointer ${
+                shouldShowUnlockBar
+                  ? 'bg-cyan-500/30 border-cyan-300/70 text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.4)]'
+                  : 'bg-[#0F172A]/85 supports-[backdrop-filter]:bg-white/10 supports-[backdrop-filter]:backdrop-blur-xl border-white/25 text-white/85 hover:text-white hover:bg-white/20 shadow-[0_4px_14px_rgba(0,0,0,0.45)]'
+              }`}
+            >
+              <Unlock className="w-3.5 h-3.5" strokeWidth={1.75} />
+              <span>PIN Panel</span>
+            </button>
+
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onPressKey('Win+L')}
+              aria-label="PC ni qulflash (Win+L)"
+              title="PC ni qulflash (Win+L)"
+              className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full border text-[11px] font-medium transition-all duration-150 cursor-pointer ${
+                isLocked
+                  ? 'bg-cyan-500/30 border-cyan-300/70 text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.4)]'
+                  : 'bg-[#0F172A]/85 supports-[backdrop-filter]:bg-white/10 supports-[backdrop-filter]:backdrop-blur-xl border-white/25 text-white/85 hover:text-white hover:bg-white/20 shadow-[0_4px_14px_rgba(0,0,0,0.45)]'
+              }`}
+            >
+              <Lock className="w-3.5 h-3.5" strokeWidth={1.75} />
+              <span>Win+L</span>
+            </button>
+          </div>
 
           <RemoteScreenKeyboardBridge
             inputRef={mobileInputRef}

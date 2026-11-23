@@ -15,10 +15,6 @@ interface PcConnectModalProps {
   open: boolean;
   status: RealAgentStatus;
   executionTarget: ExecutionTarget;
-  browserSharing: boolean;
-  shareError: string | null;
-  onStartBrowserShare: () => void;
-  onStopBrowserShare: () => void;
   onSwitchTarget: (target: ExecutionTarget) => void;
   onClose: () => void;
 }
@@ -27,10 +23,6 @@ export function PcConnectModal({
   open,
   status,
   executionTarget,
-  browserSharing,
-  shareError,
-  onStartBrowserShare,
-  onStopBrowserShare,
   onSwitchTarget,
   onClose,
 }: PcConnectModalProps) {
@@ -137,50 +129,14 @@ export function PcConnectModal({
             )}
           </div>
 
-          {/* Option 1: Browser Screen Share */}
-          <div className={`${LIQUID_CARD} p-4 space-y-3`}>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div className="font-semibold text-white">
-                  1-usul: Brauzer orqali ekran ulashish (Tavsiya etiladi)
-                </div>
-                <p className="text-white/65 mt-0.5">
-                  Hech qanday skript yoki dastursiz — Windows Defender bloklamaydi.
-                </p>
-              </div>
-              {browserSharing ? (
-                <button
-                  type="button"
-                  onClick={onStopBrowserShare}
-                  className={`${LIQUID_PILL_BTN} bg-rose-500/20 border-rose-300/40 hover:bg-rose-500/30`}
-                >
-                  <Square className="w-3.5 h-3.5 relative z-10" strokeWidth={1.75} />
-                  <span className="relative z-10">Ulashishni to‘xtatish</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onStartBrowserShare}
-                  className={LIQUID_PILL_BTN}
-                >
-                  <MonitorUp className="w-3.5 h-3.5 relative z-10" strokeWidth={1.75} />
-                  <span className="relative z-10">Ekranni ulashish</span>
-                </button>
-              )}
-            </div>
-            {shareError && (
-              <div className="text-rose-200 rounded-2xl bg-rose-500/15 border border-rose-300/30 px-3.5 py-2">
-                {shareError}
-              </div>
-            )}
-          </div>
 
-          {/* Option 2: Native Windows .exe Background Agent */}
+
+          {/* Option 1: Native Windows .exe Background Agent */}
           <div className={`${LIQUID_CARD} p-4 space-y-3.5`}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 font-semibold text-white">
                 <Monitor className="w-4 h-4 text-cyan-300" strokeWidth={1.75} />
-                <span>2-usul: Fonda ishlovchi Windows .exe Agent (Python shart emas)</span>
+                <span>1-usul: Fonda ishlovchi Windows .exe Agent (Tavsiya etiladi · Win+L qulfini ochish bilan)</span>
               </div>
               <a
                 href="/api/real-pc-agent-builder.bat"
@@ -201,7 +157,7 @@ export function PcConnectModal({
               <strong>Win+L (Qulf ekrani va PIN/Parol bilan ochish):</strong> O‘rnatish vaqtida Administrator (UAC)
               ruxsatini tasdiqlasangiz, <span className="font-mono-tabular">Win+L</span> bosilganda ham aloqa uzilmaydi,
               qulf ekrani (<span className="font-mono-tabular">Winlogon</span>) jonli ko‘rinadi va PIN/parolingizni
-              yozib kompyuter qulfini masofadan ochishingiz mumkin.
+              yozib (yoki J.A.R.V.I.S. ga "qulfni och" deb aytib) kompyuter qulfini masofadan ochishingiz mumkin.
             </div>
 
             <div className="space-y-2">
@@ -231,12 +187,12 @@ export function PcConnectModal({
             </div>
           </div>
 
-          {/* Option 3: Python Agent */}
+          {/* Option 2: Python Agent */}
           <div className={`${LIQUID_CARD} p-4 space-y-3.5`}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 font-semibold text-white">
                 <Terminal className="w-4 h-4 text-white/90" strokeWidth={1.75} />
-                <span>3-usul: Python Agent (Win+L himoyasi bilan)</span>
+                <span>2-usul: Python Agent (Win+L himoyasi bilan)</span>
               </div>
               <a
                 href="/api/real-pc-agent.py"

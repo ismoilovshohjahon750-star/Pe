@@ -14,7 +14,6 @@ type TargetListener = (target: ExecutionTarget) => void;
 
 class RealWin10Bridge {
   private agentSocket: WebSocket | null = null;
-  private browserPublisher: WebSocket | null = null;
   private status: RealAgentStatus = createInitialRealAgentStatus();
   private latestFrame: RealAgentFrame | null = null;
   private target: ExecutionTarget = 'linux';
@@ -74,80 +73,8 @@ class RealWin10Bridge {
     }
   }
 
-  startBrowserShare(ws: WebSocket, info: Record<string, unknown>): void {
-    this.clearGraceTimer();
-    if (this.agentSocket) {
-      try {
-        this.agentSocket.close();
-      } catch {
-        // ignore
-      }
-      this.agentSocket = null;
-    }
-    this.browserPublisher = ws;
-    this.status = {
-      connected: true,
-      reconnecting: false,
-      locked: false,
-      desktopName: null,
-      connectedAt: new Date().toISOString(),
-      hostname: String(info.hostname || 'Browser Screen Share'),
-      osVersion: String(info.osVersion || 'Browser Display'),
-      username: String(info.username || 'User'),
-      screenWidth: Number(info.screenWidth || 1280),
-      screenHeight: Number(info.screenHeight || 720),
-      fps: 0,
-      lastFrameAt: null,
-    };
-    this.emitStatus();
-    this.setExecutionTarget('real-win10');
-  }
-
-  pushBrowserFrame(ws: WebSocket, msg: Record<string, unknown>): void {
-    if (this.browserPublisher !== ws) return;
-    const now = Date.now();
-    this.frameTimes = [...this.frameTimes.filter((t) => now - t < 2000), now];
-    const fps = Math.round((this.frameTimes.length / 2) * 10) / 10;
-    const width = Number(msg.width || this.status.screenWidth || 1280);
-    const height = Number(msg.height || this.status.screenHeight || 720);
-    const frame: RealAgentFrame = {
-      mimeType: String(msg.mimeType || 'image/jpeg'),
-      width,
-      height,
-      data: String(msg.data || ''),
-      cursorX: 0,
-      cursorY: 0,
-      timestamp: now,
-      locked: false,
-      desktopName: null,
-    };
-    this.latestFrame = frame;
-    this.status = {
-      ...this.status,
-      reconnecting: false,
-      screenWidth: width,
-      screenHeight: height,
-      lastFrameAt: now,
-      fps,
-    };
-    for (const fn of this.frameListeners) fn(frame);
-  }
-
-  stopBrowserShare(ws: WebSocket): void {
-    if (this.browserPublisher !== ws) return;
-    this.clearGraceTimer();
-    this.browserPublisher = null;
-    if (!this.agentSocket) {
-      this.latestFrame = null;
-      this.status = createInitialRealAgentStatus();
-      this.emitStatus();
-      this.setExecutionTarget('linux');
-    }
-  }
-
   attachAgent(ws: WebSocket): void {
     this.clearGraceTimer();
-    this.browserPublisher = null;
     const previousSocket = this.agentSocket;
     this.agentSocket = ws;
     if (previousSocket && previousSocket !== ws) {
@@ -254,7 +181,7 @@ class RealWin10Bridge {
         this.clearGraceTimer();
         this.disconnectGraceTimer = setTimeout(() => {
           this.disconnectGraceTimer = null;
-          if (!this.agentSocket && !this.browserPublisher) {
+          if (!this.agentSocket) {
             this.latestFrame = null;
             this.status = createInitialRealAgentStatus();
             this.emitStatus();
@@ -268,11 +195,6 @@ class RealWin10Bridge {
 
   async executeOnAgent(tool: string, args: Record<string, unknown>): Promise<unknown> {
     if (!this.agentSocket || !this.status.connected) {
-      if (this.browserPublisher && this.status.connected) {
-        throw new Error(
-          `Browser screen share supports viewing/desktop_screenshot only. Start JarvisPcAgent.exe or real-pc-agent.py for ${tool}.`,
-        );
-      }
       if (this.status.reconnecting) {
         throw new Error('Real Windows 10 Pro agent is reconnecting, please retry in a moment');
       }

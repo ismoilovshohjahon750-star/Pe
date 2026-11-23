@@ -23,7 +23,7 @@ interface McpToolDef {
 
 const DEVICE_SELECTOR_PROP = {
   type: 'string',
-  description: 'Optional target device when PC or Android is connected: "android", "pc", "all", or device ID',
+  description: 'Optional target: "real-win10" or "linux"',
 };
 
 const MCP_TOOLS: McpToolDef[] = [
@@ -266,51 +266,14 @@ const MCP_TOOLS: McpToolDef[] = [
     },
   },
   {
-    name: 'android_action',
-    description:
-      'Execute Android hardware and system commands via Termux:API (torch, vibrate, volume, brightness, toast, notify, speak, clipboard_get, clipboard_set, camera, battery, wifi, media, open_url, share, status) without ADB or Root.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: [
-            'torch',
-            'vibrate',
-            'volume',
-            'brightness',
-            'toast',
-            'notify',
-            'speak',
-            'clipboard_get',
-            'clipboard_set',
-            'camera',
-            'battery',
-            'wifi',
-            'media',
-            'open_url',
-            'share',
-            'status',
-          ],
-          description: 'Android system or hardware action',
-        },
-        value: { type: 'string', description: 'Optional action value or parameter e.g. on/off, up/down, duration, volume level' },
-        text: { type: 'string', description: 'Optional text for toast, notification, TTS speech, clipboard, or URL' },
-        device: { type: 'string', description: 'Target device ID, kind (android, pc), hostname, or "all" (default: active device)' },
-      },
-      required: ['action'],
-    },
-  },
-  {
     name: 'unlock_pc',
     description:
-      'Unlock a connected Windows PC lock screen (Win+L) by waking the lock curtain and typing the Windows PIN/password + Enter (requires JarvisUnlockService running on the PC).',
+      'Unlock a connected Windows PC lock screen (Win+L) by waking the lock screen and typing the Windows PIN/password + Enter.',
     inputSchema: {
       type: 'object',
       properties: {
         pin: { type: 'string', description: 'Windows lock screen PIN or password to type' },
         wake: { type: 'boolean', description: 'Wake the Windows lock curtain before typing PIN (default true)' },
-        sas: { type: 'boolean', description: 'Send Ctrl+Alt+Del (SAS) instead of typing PIN' },
         device: DEVICE_SELECTOR_PROP,
       },
     },
@@ -346,8 +309,8 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
     const target = realWin10Bridge.getExecutionTarget();
     const deviceSelector = typeof args.device === 'string' && args.device.trim() ? args.device.trim() : undefined;
     const requestedRealDevice =
-      Boolean(deviceSelector && deviceSelector.toLowerCase() !== 'linux') ||
-      name === 'android_action';
+      Boolean(deviceSelector && (deviceSelector.toLowerCase() === 'real-win10' || deviceSelector.toLowerCase() === 'pc')) ||
+      name === 'unlock_pc';
 
     if (target === 'linux' && !requestedRealDevice && !realLinuxDesktop.getStatus().running) {
       await realLinuxDesktop.ensureStarted();
@@ -613,10 +576,8 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
         return { content: [{ type: 'text', text: msg }] };
       }
       if (name === 'desktop_screenshot') {
-        const matchedIds = realWin10Bridge.resolveDeviceIds(deviceSelector);
-        const targetDevId = matchedIds[0] || undefined;
-        const frame = realWin10Bridge.getLatestFrame(targetDevId);
-        const status = realWin10Bridge.getStatus(targetDevId);
+        const frame = realWin10Bridge.getLatestFrame();
+        const status = realWin10Bridge.getStatus();
         if (frame?.data) {
           const summary = `Captured real device frame (${frame.width}x${frame.height})`;
           desktopStore.logActivity('mcp', name, 'real-win10', summary, 'ok', Date.now() - started);
@@ -627,11 +588,11 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
                 type: 'text',
                 text: JSON.stringify({
                   target: 'real-win10',
-                  deviceId: targetDevId || realWin10Bridge.getActiveDeviceId(),
                   hostname: status.hostname,
                   osVersion: status.osVersion,
                   screen: { width: frame.width, height: frame.height },
                   cursor: { x: frame.cursorX, y: frame.cursorY },
+                  locked: status.locked,
                 }),
               },
             ],
@@ -643,7 +604,6 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
       const agentOut = await realWin10Bridge.executeOnAgent(
         name,
         cleanArgs,
-        deviceSelector || (name === 'android_action' ? 'android' : undefined),
       );
       const allFailed =
         Array.isArray(agentOut) &&

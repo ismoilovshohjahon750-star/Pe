@@ -477,7 +477,7 @@ const ACTION_VERBS_REGEX =
   /\b(och|ochib|ochgin|yop|yopib|bos|bosgin|yoz|yozib|yarat|yaratib|o['‘`]?chir|o['‘`]?chirib|ishga tushir|tushir|yoq|yoqib|ulan|ulab|ko['‘`]?rsat|ko['‘`]?r|tekshir|o['‘`]?qi|o['‘`]?qib|saqla|qidir|top|topib|skrinshot|screenshot|rasm ol|bajar|bajargin|qil|qilib|ko['‘`]?chir|o['‘`]?rnat|to['‘`]?xtat|aylantir|kir|kirit|yubor|chiz|hisobla|kompilyatsiya|yangila|run|start|open|close|click|tap|press|type|write|create|make|delete|remove|read|list|scroll|move|drag|navigate|launch|execute|install|check|find|search|show|turn|vibrate|enable|disable|send|kill|открой|закрой|нажми|запусти|создай|удали|напиши|проверь|покажи)\b/i;
 
 const ACTION_TARGET_REGEX =
-  /\b(terminal|powershell|bash|cmd|brauzer|browser|chrome|chromium|edge|youtube|google|kalkulyator|calculator|notepad|mousepad|explorer|fayl|file|papka|folder|ekran|screen|fonar|torch|chiroq|ovoz|volume|yorug['‘`]?lik|brightness|tebran|vibrate|kamera|camera|batareya|battery|wifi|bufer|clipboard|ilova|dastur|app|url|sayt|site|oyna|window|kod|code|skript|script|kompyuter|pc|telefon|android|linux)\b/i;
+  /\b(terminal|powershell|bash|cmd|brauzer|browser|chrome|chromium|edge|youtube|google|kalkulyator|calculator|notepad|mousepad|explorer|fayl|file|papka|folder|ekran|screen|fonar|torch|chiroq|ovoz|volume|yorug['‘`]?lik|brightness|ilova|dastur|app|url|sayt|site|oyna|window|kod|code|skript|script|kompyuter|pc|qulf|lock|unlock|pin|parol|linux)\b/i;
 
 const PURE_CHAT_REGEX =
   /^(salom|assalomu alaykum|qalaysan|qandaysan|rahmat|tashakkur|kim|seni kim|nima qila olasan|isming nima|hello|hi|hey|who are you|who created|how are you|thanks|thank you)[!?\s.,]*$/i;
@@ -511,7 +511,7 @@ export function guardEmptyExecutionReply(
 
   if (outcomes.length === 0) {
     if (!cleanReply || looksLikeCompletedClaim(cleanReply) || isLikelyActionRequest(userMessage)) {
-      return 'Kechirasiz, Janob — birorta ham tizim vositasi (tool) ishga tushirilmadi, shuning uchun buyruq amalda bajarilmadi. Iltimos, qaysi qurilmada (Linux, PC yoki Android) qaysi amalni bajarishni aniqroq yozing.';
+      return 'Kechirasiz, Janob — birorta ham tizim vositasi (tool) ishga tushirilmadi, shuning uchun buyruq amalda bajarilmadi. Iltimos, qaysi tizimda (Linux yoki Real Windows PC) qaysi amalni bajarishni aniqroq ayting.';
     }
     return cleanReply;
   }
@@ -541,10 +541,9 @@ export function buildJarvisSystemInstruction(screenInfo: string): string {
     'Muloqot uslubing xuddi Toni Starkning J.A.R.V.I.S. i kabi bo‘lsin: bosiq, sodiq, aqlli, nafis hazil-mutoyibali va aristokratik ohangda gapir; foydalanuvchiga odatda "Janob" deb murojaat qil ("Albatta, Janob", "Bajarildi, Janob", "Tizimlar tayyor, Janob"). ' +
     `Hozirgi faol tizim: ${screenInfo}. ` +
     'Boshqaruv vakolatlaring: Claude AI MCP bilan bir xil barcha tizim vositalariga egasan. ' +
+    'QULFNI OCHISH VA QULFLASH (LOCK SCREEN UNLOCK & WIN+L): Agar haqiqiy Windows kompyuter qulflangan bo‘lsa (locked: true yoki Winlogon desktop), foydalanuvchi "qulfni och", "kompyuterni och", "parol ...", "pin ...", "och" deb aytganda, darhol unlock_pc(pin: "...") yoki desktop_type(text: "...", enter: true) chaqirib qulfni och! Agar foydalanuvchi qulflashni yoki ekranni block qilishni so‘rasa ("qulfla", "block qil", "win+l"), darhol desktop_key(key: "Win+L") vositasini chaqir! ' +
     'Koordinata qoidasi: desktop_click, desktop_move, desktop_drag, desktop_scroll vositalarida x va y qiymatlarni 0..1000 oralig‘ida ber (0 = chap/yuqori chekka, 500 = markaz, 1000 = o‘ng/pastki chekka); tizim ularni avtomatik ekran piksellariga o‘giradi. ' +
     'Veb-sahifadagi tugmalar/havolalar/oyna tugmalari uchun desktop_click(..., button: "left") ishlat; ish stoli yorliqlari (Desktop icons) uchun button: "double" yoki open_app ishlat. ' +
-    'desktop_click bajarilgandan keyin yangilangan ekran rasmi qaytadi — tugma holati o‘zgarganini tekshir; o‘zgarmagan bo‘lsa aniqroq (x, y) ga yana bir marta bos, o‘zgargan bo‘lsa darhol hisobot ber. ' +
-    'Agar vosita "Browser screen share supports viewing/desktop_screenshot only" xatosini qaytarsa, boshqa bosishga urinma va real-pc-agent.py ni ishga tushirish kerakligini tushuntir. ' +
     'QAT\'IY QOIDA (MUHIM): Agar foydalanuvchi biron buyruq bersa (masalan, ilova ochish, terminalda buyruq yuborish, fayl o\'qish/yozish, sichqoncha bilan bosish), SEN HECH QACHON faqat og\'zaki ravishda "bajarildi" yoki "tayyor" deb javob berolmaysan. Haqiqiy amalni bajarish uchun har doim tegishli MCP vositasini (tool/function call) chaqirishing SHART. Vosita chaqirilmaguncha buyruq bajarilgan deb hisoblanmaydi. ' +
     'Ovozli muloqot va matn qoidasi: javoblaring foydalanuvchi tilida (odatda o‘zbek tilida), iloji boricha qisqa va lo‘nda (odatda 1-2 ta tabiiy gap), ovoz chiqarib o‘qishga qulay bo‘lsin; *, **, ` kabi markdown belgilarni ishlatma.'
   );
@@ -848,25 +847,14 @@ export async function runJarvisChat(
   const contents = buildGeminiContents(history, message, activeFrame);
 
   const executedTools: string[] = [];
-  const devices = realWin10Bridge.getDevices();
-  const activeDevId = realWin10Bridge.getActiveDeviceId();
   const screenW =
-    target === 'real-win10' && realStatus.connected ? realStatus.screenWidth || 1280 : 1280;
+    target === 'real-win10' && realStatus.connected ? realStatus.screenWidth || 1920 : 1280;
   const screenH =
-    target === 'real-win10' && realStatus.connected ? realStatus.screenHeight || 720 : 720;
-  const devicesDesc =
-    devices.length > 0
-      ? devices
-          .map(
-            (d) =>
-              `- [id: ${d.id}] ${d.kind.toUpperCase()} (${d.hostname}, OS: ${d.osVersion}, size: ${d.screenWidth}x${d.screenHeight}, active: ${d.active})`,
-          )
-          .join('\n')
-      : 'Hozircha qo‘shimcha tashqi qurilma ulanmagan.';
+    target === 'real-win10' && realStatus.connected ? realStatus.screenHeight || 1080 : 720;
   const screenInfo =
     target === 'real-win10' && realStatus.connected
-      ? `Ulangan qurilmalar (Jami: ${devices.length}, Faol: ${activeDevId || 'none'}):\n${devicesDesc}\nSiz barcha qo'shilgan qurilmalarni bir vaqtning o'zida yoki alohida boshqara olasiz (device: "android", device: "pc", device: "all").`
-      : `Debian GNU/Linux 12 X11 desktop (${screenW}x${screenH}, DISPLAY=:99, root). Shuningdek tashqi PC yoki Android Termux telefonlarni bir vaqtda ulashingiz mumkin.`;
+      ? `Real Windows 10 Pro PC (${realStatus.hostname || 'PC'}, OS: ${realStatus.osVersion}, User: ${realStatus.username}, Status: ${realStatus.locked ? 'LOCKED (Winlogon lock screen)' : 'UNLOCKED'}, Desktop: ${realStatus.desktopName || 'Default'}, Resolution: ${screenW}x${screenH}). Siz ushbu real PC ni to'liq boshqara olasiz (klaviatura, sichqoncha, lock, unlock, app ochish, h.k.).`
+      : `Debian GNU/Linux 12 X11 desktop (${screenW}x${screenH}, DISPLAY=:99). Shuningdek Real Windows 10 PC agentini ulashingiz mumkin.`;
 
   const systemInstruction = buildJarvisSystemInstruction(screenInfo);
 

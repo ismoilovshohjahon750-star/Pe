@@ -107,6 +107,7 @@ export function resolveMcpExecutionMode(
     'file_write',
     'file_delete',
     'wait',
+    'unlock_pc',
   ]);
 
   const linuxCapableTools = new Set([

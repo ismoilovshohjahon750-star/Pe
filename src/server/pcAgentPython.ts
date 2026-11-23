@@ -193,6 +193,20 @@ def run_tool(tool: str, args: dict):
             pyautogui.press(key_map.get(key, key.lower()))
         return f"Sent key {key}"
 
+    if tool == "unlock_pc":
+        pin = str(args.get("pin") or "")
+        wake = bool(args.get("wake", True))
+        if wake:
+            pyautogui.press("space")
+            time.sleep(0.3)
+            pyautogui.press("esc")
+            time.sleep(0.2)
+        if pin:
+            pyautogui.write(pin, interval=0.01)
+            pyautogui.press("enter")
+            return f"Unlocked PC with PIN/password ({len(pin)} chars)"
+        return "Woke up PC lock screen"
+
     if tool == "browser_navigate":
         url = str(args.get("url", "https://modelcontextprotocol.io"))
         webbrowser.open(url)

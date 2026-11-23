@@ -1234,6 +1234,28 @@ namespace JarvisPcAgent
                 });
             }
 
+            if (tool == "unlock_pc")
+            {
+                string pin = GetStr(args, "pin", "");
+                bool wake = !args.ContainsKey("wake") || GetBool(args, "wake");
+                return Input.Execute(delegate
+                {
+                    if (wake)
+                    {
+                        InputWorker.SendKeyName("Space");
+                        Thread.Sleep(300);
+                        InputWorker.SendKeyName("Escape");
+                        Thread.Sleep(200);
+                    }
+                    if (!string.IsNullOrEmpty(pin))
+                    {
+                        InputWorker.TypeText(pin, true);
+                        return "Unlocked PC with PIN/password (" + pin.Length + " chars)";
+                    }
+                    return "Woke up PC lock screen";
+                });
+            }
+
             if (tool == "browser_navigate")
             {
                 string url = GetStr(args, "url", "https://modelcontextprotocol.io");

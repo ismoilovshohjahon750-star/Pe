@@ -191,6 +191,17 @@ async function startServer() {
             });
           }
           break;
+        case 'user:real_unlock':
+          if (realWin10Bridge.getStatus().connected) {
+            const out = await realWin10Bridge.executeOnAgent('unlock_pc', {
+              pin: typeof msg.pin === 'string' ? msg.pin : '',
+              wake: msg.wake !== false,
+            });
+            res.json({ ok: true, result: out });
+            return;
+          }
+          res.status(400).json({ ok: false, error: 'Real Windows PC ulangan emas.' });
+          return;
         default:
           res.status(400).json({ ok: false, error: 'Unsupported input action' });
           return;
@@ -842,6 +853,14 @@ async function startServer() {
                 });
               }
               break;
+            case 'user:real_unlock':
+              if (realWin10Bridge.getStatus().connected) {
+                await realWin10Bridge.executeOnAgent('unlock_pc', {
+                  pin: typeof msg.pin === 'string' ? msg.pin : '',
+                  wake: msg.wake !== false,
+                });
+              }
+              break;
             case 'user:linux_move':
               await realLinuxDesktop.moveMouse(Number(msg.x ?? 0), Number(msg.y ?? 0));
               break;
@@ -871,15 +890,7 @@ async function startServer() {
                 msg.payload as { filePath?: string; url?: string } | undefined,
               );
               break;
-            case 'browser_agent:hello':
-              realWin10Bridge.startBrowserShare(ws, msg);
-              break;
-            case 'browser_agent:frame':
-              realWin10Bridge.pushBrowserFrame(ws, msg);
-              break;
-            case 'browser_agent:stop':
-              realWin10Bridge.stopBrowserShare(ws);
-              break;
+
           }
         } catch {
           // ignore malformed WS frames
@@ -888,7 +899,6 @@ async function startServer() {
     });
 
     ws.on('close', () => {
-      realWin10Bridge.stopBrowserShare(ws);
       desktopStore.setViewerCount(wss.clients.size);
     });
   });
