@@ -226,14 +226,17 @@ class RealWin10Bridge {
       }
     }
 
-    const id = this.createDeviceId('browser');
+    const host = String(info.hostname || 'Browser Screen Share');
+    const osVer = String(info.osVersion || 'Browser Display');
+    const kind = detectDeviceKind(osVer, host, true);
+    const id = this.createDeviceId(kind);
     const rec: ConnectedDeviceRecord = {
       id,
       ws,
-      kind: 'browser',
+      kind,
       isBrowserShare: true,
-      hostname: String(info.hostname || 'Browser Screen Share'),
-      osVersion: String(info.osVersion || 'Browser Display'),
+      hostname: host,
+      osVersion: osVer,
       username: String(info.username || 'User'),
       screenWidth: Number(info.screenWidth || 1280),
       screenHeight: Number(info.screenHeight || 720),

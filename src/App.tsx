@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Cpu, Monitor, Plug, Settings } from 'lucide-react';
+import { Cpu, Monitor, Plug, Settings, Smartphone } from 'lucide-react';
 import { LIQUID_PILL_BTN } from './components/liquidGlass.ts';
 import { JarvisModal } from './components/JarvisModal.tsx';
 import { McpConnectModal } from './components/McpConnectModal.tsx';
@@ -37,6 +37,7 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const shareStreamRef = useRef<MediaStream | null>(null);
   const shareTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const shareWorkerRef = useRef<Worker | null>(null);
   const lastWsFrameAtRef = useRef<number>(0);
   const jarvisSyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -220,6 +221,13 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleWakeup);
       window.removeEventListener('online', handleWakeup);
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (shareWorkerRef.current) {
+        try {
+          shareWorkerRef.current.postMessage('stop');
+          shareWorkerRef.current.terminate();
+        } catch {}
+        shareWorkerRef.current = null;
+      }
       if (shareTimerRef.current) clearInterval(shareTimerRef.current);
       if (jarvisSyncTimerRef.current) clearInterval(jarvisSyncTimerRef.current);
       shareStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -244,6 +252,13 @@ export default function App() {
   }, []);
 
   const stopBrowserShare = useCallback(() => {
+    if (shareWorkerRef.current) {
+      try {
+        shareWorkerRef.current.postMessage('stop');
+        shareWorkerRef.current.terminate();
+      } catch {}
+      shareWorkerRef.current = null;
+    }
     if (shareTimerRef.current) {
       clearInterval(shareTimerRef.current);
       shareTimerRef.current = null;
@@ -259,12 +274,17 @@ export default function App() {
   const startBrowserShare = useCallback(async () => {
     setShareError(null);
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      setShareError('Bu brauzer ekran ulashishni qo‘llab-quvvatlamaydi.');
+      setShareError('Bu brauzer ekran ulashishni qo‘llab-quvvatlamaydi. Chrome yoki Firefox tavsiya etiladi.');
       return;
     }
     try {
+      const isAndroid = typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
+      const isMobile = typeof navigator !== 'undefined' && /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
+
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 5, max: 10 } },
+        video: {
+          frameRate: { ideal: isMobile ? 6 : 8, max: 12 },
+        },
         audio: false,
       });
       stopBrowserShare();
@@ -273,13 +293,16 @@ export default function App() {
       const video = document.createElement('video');
       video.srcObject = stream;
       video.muted = true;
+      video.playsInline = true;
       await video.play();
 
-      const srcW = video.videoWidth || 1280;
-      const srcH = video.videoHeight || 720;
-      const scale = Math.min(1, 1280 / srcW);
-      const w = Math.max(320, Math.round(srcW * scale));
-      const h = Math.max(180, Math.round(srcH * scale));
+      const srcW = video.videoWidth || (isMobile ? 720 : 1280);
+      const srcH = video.videoHeight || (isMobile ? 1280 : 720);
+      const maxDim = Math.max(srcW, srcH);
+      const targetMax = isMobile ? 960 : 1280;
+      const scale = maxDim > targetMax ? targetMax / maxDim : 1;
+      const w = Math.max(240, Math.round(srcW * scale));
+      const h = Math.max(240, Math.round(srcH * scale));
 
       const canvas = document.createElement('canvas');
       canvas.width = w;
@@ -288,31 +311,66 @@ export default function App() {
 
       sendWs({
         type: 'browser_agent:hello',
-        hostname: 'Brauzer Ekran Ulashish',
-        osVersion: navigator.platform || 'Windows',
-        username: 'PC',
+        hostname: isAndroid ? 'Android Telefon' : isMobile ? 'Mobil Telefon' : 'Brauzer Ekran Ulashish',
+        osVersion: isAndroid ? 'Android 10+ (Chrome Cast)' : (navigator.platform || 'Browser'),
+        username: isAndroid ? 'Telefon' : 'PC',
         screenWidth: w,
         screenHeight: h,
       });
 
       const sendFrame = () => {
         if (!ctx || video.readyState < 2) return;
-        ctx.drawImage(video, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
-        const base64 = dataUrl.split(',')[1] || '';
-        if (base64) {
-          sendWs({
-            type: 'browser_agent:frame',
-            mimeType: 'image/jpeg',
-            width: w,
-            height: h,
-            data: base64,
-          });
+        try {
+          ctx.drawImage(video, 0, 0, w, h);
+          const dataUrl = canvas.toDataURL('image/jpeg', isMobile ? 0.58 : 0.65);
+          const base64 = dataUrl.split(',')[1] || '';
+          if (base64) {
+            sendWs({
+              type: 'browser_agent:frame',
+              mimeType: 'image/jpeg',
+              width: w,
+              height: h,
+              data: base64,
+            });
+          }
+        } catch {
+          // ignore frame drawing error
         }
       };
 
       sendFrame();
-      shareTimerRef.current = setInterval(sendFrame, 350);
+
+      // Inline Blob Web Worker ensures frame ticks continue when user switches to Termux on mobile
+      try {
+        const workerBlob = new Blob([
+          `
+          let intervalId = null;
+          self.onmessage = function(e) {
+            if (e.data === 'start') {
+              if (intervalId) clearInterval(intervalId);
+              intervalId = setInterval(function() {
+                self.postMessage('tick');
+              }, 320);
+            } else if (e.data === 'stop') {
+              if (intervalId) clearInterval(intervalId);
+              intervalId = null;
+            }
+          };
+          `
+        ], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(workerBlob);
+        const worker = new Worker(workerUrl);
+        worker.onmessage = (e) => {
+          if (e.data === 'tick') {
+            sendFrame();
+          }
+        };
+        worker.postMessage('start');
+        shareWorkerRef.current = worker;
+      } catch {
+        shareTimerRef.current = setInterval(sendFrame, 320);
+      }
+
       setBrowserSharing(true);
       setPcModalOpen(false);
 
@@ -412,6 +470,28 @@ export default function App() {
               }`}
             >
               <span className="relative z-10">⚡ 2-Ekran Split</span>
+            </button>
+          )}
+
+          {browserSharing ? (
+            <button
+              type="button"
+              onClick={stopBrowserShare}
+              className={`${LIQUID_PILL_BTN} bg-rose-500/25 border-rose-300/60 text-white animate-pulse`}
+              title="Translatsiyani to'xtatish"
+            >
+              <span className="w-2 h-2 rounded-full bg-rose-400 relative z-10" aria-hidden="true" />
+              <span className="relative z-10 font-medium">🔴 Translatsiya faol (To'xtatish)</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={startBrowserShare}
+              className={`${LIQUID_PILL_BTN} bg-emerald-500/15 border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/25`}
+              title="Telefonda ekranni ulashish (100% ADB-siz)"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-emerald-400 relative z-10" strokeWidth={1.75} />
+              <span className="relative z-10">📲 1-usul: Ekran Ulash</span>
             </button>
           )}
 

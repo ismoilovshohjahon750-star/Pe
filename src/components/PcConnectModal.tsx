@@ -175,24 +175,22 @@ export function PcConnectModal({
           {deviceTab === 'android' ? (
             <>
               {/* Android No-ADB Browser Screen Share Card */}
-              <div className={`${LIQUID_CARD} p-4 space-y-3.5`}>
+              <div className={`${LIQUID_CARD} p-4 space-y-3.5 border-emerald-500/30 bg-emerald-950/20`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2 font-semibold text-white">
-                      <MonitorUp className="w-4 h-4 text-emerald-300" strokeWidth={1.75} />
-                      <span>1-usul: Telefonda Brauzer orqali Ekran Ulashish (100% ADB siz!)</span>
+                    <div className="flex items-center gap-2 font-semibold text-emerald-300">
+                      <MonitorUp className="w-4 h-4 text-emerald-400" strokeWidth={1.75} />
+                      <span>1-usul: Telefonda Brauzer orqali Ekran Ulashish (100% ADB siz, No-Cable)</span>
                     </div>
-                    <p className="text-white/70 mt-1 leading-relaxed">
-                      Telefonda Chrome (yoki Firefox) brauzerida saytga kiring va quyidagi tugmani bosing. Android tizimi darhol
-                      <em> "Translatsiyani boshlash"</em> so‘rovini chiqaradi. Boshlangandan so‘ng brauzerni qoldirib Termuxga o‘tishingiz mumkin —
-                      Termux buyruqlarni boshqaradi, brauzer esa to‘liq ekranni jonli uzatadi!
+                    <p className="text-white/80 mt-1 leading-relaxed">
+                      Android 10+ telefoningizda Chrome orqali hech qanday simsiz yoki simli ADB kerak emas! Ekranni to‘g‘ridan-to‘g‘ri brauzer orqali uzatish:
                     </p>
                   </div>
                   {browserSharing ? (
                     <button
                       type="button"
                       onClick={onStopBrowserShare}
-                      className={`${LIQUID_PILL_BTN} bg-rose-500/20 border-rose-300/40 hover:bg-rose-500/30`}
+                      className={`${LIQUID_PILL_BTN} bg-rose-500/25 border-rose-300/50 hover:bg-rose-500/35 text-rose-200 animate-pulse`}
                     >
                       <Square className="w-3.5 h-3.5 relative z-10" strokeWidth={1.75} />
                       <span className="relative z-10">Translatsiyani to‘xtatish</span>
@@ -201,13 +199,29 @@ export function PcConnectModal({
                     <button
                       type="button"
                       onClick={onStartBrowserShare}
-                      className={LIQUID_PILL_BTN}
+                      className={`${LIQUID_PILL_BTN} bg-emerald-500/25 border-emerald-300/60 hover:bg-emerald-500/35 text-white`}
                     >
                       <MonitorUp className="w-3.5 h-3.5 relative z-10" strokeWidth={1.75} />
-                      <span className="relative z-10">📲 Telefonda Ekranni Ulashish</span>
+                      <span className="relative z-10 font-medium">📲 Telefonda Ekranni Ulashish</span>
                     </button>
                   )}
                 </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 text-[11px]">
+                  <div className="rounded-xl p-2.5 bg-white/[0.04] border border-white/10 space-y-1">
+                    <div className="font-semibold text-emerald-300">1-qadam: Saytni oching</div>
+                    <div className="text-white/70">Telefondagi Chrome brauzerida ushbu saytni oching.</div>
+                  </div>
+                  <div className="rounded-xl p-2.5 bg-white/[0.04] border border-white/10 space-y-1">
+                    <div className="font-semibold text-emerald-300">2-qadam: Ruxsat bering</div>
+                    <div className="text-white/70">"📲 Telefonda Ekranni Ulashish" tugmasini bosib Android so‘roviga "Boshlash" deb bosing.</div>
+                  </div>
+                  <div className="rounded-xl p-2.5 bg-white/[0.04] border border-white/10 space-y-1">
+                    <div className="font-semibold text-emerald-300">3-qadam: Termux'ga o‘ting</div>
+                    <div className="text-white/70">Brauzerni fonda qoldirib, Termux'da quyidagi agent buyrug‘ini bering.</div>
+                  </div>
+                </div>
+
                 {shareError && (
                   <div className="text-rose-200 rounded-2xl bg-rose-500/15 border border-rose-300/30 px-3.5 py-2">
                     {shareError}
