@@ -536,9 +536,9 @@ export function PcConnectModal({
                   faylini tuzib, konsol oynasisiz fonda ishga tushiradi va uzilsa avtomatik qayta ulanadi.
                 </p>
                 <div className="rounded-2xl bg-cyan-500/10 border border-cyan-300/25 px-3.5 py-2.5 text-cyan-100/90 leading-relaxed">
-                  <strong>Win+L (Ekran qulflanganda):</strong> Agent fonda uzilmasdan ishlayveradi — terminal
-                  (<span className="font-mono-tabular">run_powershell</span>, <span className="font-mono-tabular">run_bash</span>) va fayl buyruqlari
-                  (<span className="font-mono-tabular">file_*</span>) bajariladi. Faqat Windows xavfsizlik qoidasi sababli qulf ochilmaguncha jonli ekran tasviri va sichqoncha/klaviatura bosishlari tizim tomonidan vaqtincha bloklanadi.
+                  <strong>Win+L (Ekran qulflanganda ham kod yozib ochish):</strong> <span className="font-mono-tabular">JarvisPcAgent-Setup.bat</span>{' '}
+                  Administrator ruxsati bilan <span className="font-mono-tabular">JarvisUnlockService</span> (SYSTEM xizmati) ni o‘rnatadi — shu orqali PC{' '}
+                  <span className="font-mono-tabular">Win+L</span> bilan qulflanganda ham qulf ekranini ko‘rib, PIN/parolni kiritib masofadan ocha olasiz.
                 </div>
 
                 <div className="space-y-2">

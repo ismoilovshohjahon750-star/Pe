@@ -617,6 +617,40 @@ export default function App() {
     }).catch(() => {});
   };
 
+  const unlockRealPc = async (
+    payload: { pin?: string; wake?: boolean; sas?: boolean },
+    targetDeviceId?: string | null,
+  ) => {
+    const res = await authFetch('/api/desktop/input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'user:real_unlock',
+        deviceId: targetDeviceId ?? activeDeviceId ?? undefined,
+        ...payload,
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      result?: unknown;
+      error?: string;
+    };
+    if (!res.ok || !data.ok) {
+      return {
+        ok: false,
+        error: data.error || 'Windows qulfini ochish buyrug‘i bajarilmadi.',
+      };
+    }
+    syncRealAgentFrame();
+    return {
+      ok: true,
+      message:
+        typeof data.result === 'string' && data.result
+          ? data.result
+          : 'PIN/parol yuborildi.',
+    };
+  };
+
   const hasRealDevice = realAgentStatus.connected || connectedDevices.length > 0;
   const showingRealPc =
     (executionTarget === 'real-win10' && hasRealDevice) ||
@@ -853,6 +887,7 @@ export default function App() {
                       onPressKey={(key) =>
                         sendWs({ type: 'user:real_key', key, deviceId: dev.id })
                       }
+                      onUnlockPc={(payload) => unlockRealPc(payload, dev.id)}
                     />
                   </div>
                 </div>
@@ -880,6 +915,7 @@ export default function App() {
             onPressKey={(key) =>
               sendWs({ type: 'user:real_key', key, deviceId: activeDeviceId })
             }
+            onUnlockPc={(payload) => unlockRealPc(payload, activeDeviceId)}
           />
         ) : (
           <RealLinuxView

@@ -302,6 +302,20 @@ const MCP_TOOLS: McpToolDef[] = [
     },
   },
   {
+    name: 'unlock_pc',
+    description:
+      'Unlock a connected Windows PC lock screen (Win+L) by waking the lock curtain and typing the Windows PIN/password + Enter (requires JarvisUnlockService running on the PC).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pin: { type: 'string', description: 'Windows lock screen PIN or password to type' },
+        wake: { type: 'boolean', description: 'Wake the Windows lock curtain before typing PIN (default true)' },
+        sas: { type: 'boolean', description: 'Send Ctrl+Alt+Del (SAS) instead of typing PIN' },
+        device: DEVICE_SELECTOR_PROP,
+      },
+    },
+  },
+  {
     name: 'wait',
     description: 'Pause execution for ms milliseconds (100..10000) while waiting for apps, pages, or commands to update on screen.',
     inputSchema: {
@@ -828,6 +842,17 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
         summary = `Drew ${points.length}-point stroke (${color})`;
         result = { content: [{ type: 'text', text: summary }] };
         break;
+      }
+      case 'unlock_pc': {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: 'unlock_pc faqat ulangan Windows PC (Win+L qulf ekrani) uchun ishlaydi.',
+            },
+          ],
+        };
       }
       default:
         return {

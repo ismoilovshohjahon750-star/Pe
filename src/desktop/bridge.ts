@@ -36,6 +36,8 @@ export interface RealAgentFrame {
   cursorX: number;
   cursorY: number;
   timestamp: number;
+  locked?: boolean;
+  lockServiceReady?: boolean;
 }
 
 export interface LinuxDesktopStatus {
@@ -98,6 +100,7 @@ export function resolveMcpExecutionMode(
     'file_write',
     'file_delete',
     'android_action',
+    'unlock_pc',
     'wait',
   ]);
 

@@ -23,41 +23,252 @@ public class Win32Input {
     [DllImport("user32.dll")]
     public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool CloseDesktop(IntPtr hDesktop);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool LockWorkStation();
+
+    [DllImport("user32.dll")]
+    public static extern short VkKeyScan(char ch);
+
+    [DllImport("user32.dll")]
+    public static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT {
+        public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT {
+        public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HARDWAREINPUT {
+        public uint uMsg; public ushort wParamL; public ushort wParamH;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    public struct InputUnion {
+        [FieldOffset(0)] public MOUSEINPUT mi;
+        [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public HARDWAREINPUT hi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT {
+        public uint type;
+        public InputUnion U;
+    }
+
     public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     public const uint MOUSEEVENTF_LEFTUP = 0x0004;
     public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
     public const uint MOUSEEVENTF_WHEEL = 0x0800;
+
+    public const uint INPUT_KEYBOARD = 1;
+    public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint KEYEVENTF_UNICODE = 0x0004;
+
+    private static bool ResolveVk(string raw, out ushort vk, out bool ext) {
+        vk = 0; ext = false;
+        if (string.IsNullOrEmpty(raw)) return false;
+        string t = raw.Trim().ToLowerInvariant();
+        if (t == "win" || t == "lwin" || t == "super" || t == "super_l" || t == "meta" || t == "windows") { vk = 0x5B; ext = true; return true; }
+        if (t == "rwin" || t == "super_r") { vk = 0x5C; ext = true; return true; }
+        if (t == "ctrl" || t == "control" || t == "lctrl" || t == "rctrl") { vk = 0x11; return true; }
+        if (t == "alt" || t == "menu" || t == "lalt" || t == "ralt") { vk = 0x12; return true; }
+        if (t == "shift" || t == "lshift" || t == "rshift") { vk = 0x10; return true; }
+        if (t == "enter" || t == "return") { vk = 0x0D; return true; }
+        if (t == "tab") { vk = 0x09; return true; }
+        if (t == "esc" || t == "escape") { vk = 0x1B; return true; }
+        if (t == "space" || t == " ") { vk = 0x20; return true; }
+        if (t == "backspace" || t == "back") { vk = 0x08; return true; }
+        if (t == "delete" || t == "del") { vk = 0x2E; ext = true; return true; }
+        if (t == "home") { vk = 0x24; ext = true; return true; }
+        if (t == "end") { vk = 0x23; ext = true; return true; }
+        if (t == "pageup" || t == "pgup") { vk = 0x21; ext = true; return true; }
+        if (t == "pagedown" || t == "pgdn") { vk = 0x22; ext = true; return true; }
+        if (t == "left" || t == "arrowleft") { vk = 0x25; ext = true; return true; }
+        if (t == "up" || t == "arrowup") { vk = 0x26; ext = true; return true; }
+        if (t == "right" || t == "arrowright") { vk = 0x27; ext = true; return true; }
+        if (t == "down" || t == "arrowdown") { vk = 0x28; ext = true; return true; }
+        if (t.StartsWith("f") && t.Length >= 2 && t.Length <= 3) {
+            int fn; if (int.TryParse(t.Substring(1), out fn) && fn >= 1 && fn <= 24) { vk = (ushort)(0x70 + fn - 1); return true; }
+        }
+        if (t.Length == 1) {
+            char c = t[0];
+            if (c >= 'a' && c <= 'z') { vk = (ushort)('A' + (c - 'a')); return true; }
+            if (c >= '0' && c <= '9') { vk = (ushort)c; return true; }
+            short sc = VkKeyScan(raw.Trim()[0]);
+            if (sc != -1) { vk = (ushort)(sc & 0xFF); return true; }
+        }
+        return false;
+    }
+
+    private static uint SendVk(ushort vk, bool up, bool ext) {
+        INPUT[] inp = new INPUT[1];
+        inp[0].type = INPUT_KEYBOARD;
+        inp[0].U.ki.wVk = vk;
+        inp[0].U.ki.wScan = (ushort)MapVirtualKey(vk, 0);
+        inp[0].U.ki.dwFlags = (ext ? KEYEVENTF_EXTENDEDKEY : 0) | (up ? KEYEVENTF_KEYUP : 0);
+        return SendInput(1, inp, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    public static string SendKeyOrCombo(string keySpec) {
+        string[] parts = keySpec.Split(new char[] { '+' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) throw new InvalidOperationException("Empty keySpec");
+        ushort[] vks = new ushort[parts.Length];
+        bool[] exts = new bool[parts.Length];
+        for (int i = 0; i < parts.Length; i++) {
+            if (!ResolveVk(parts[i], out vks[i], out exts[i])) throw new InvalidOperationException("Unknown key: " + parts[i]);
+        }
+        if (vks.Length == 2 && (vks[0] == 0x5B || vks[0] == 0x5C) && vks[1] == 0x4C) {
+            if (!LockWorkStation()) throw new InvalidOperationException("LockWorkStation failed");
+            return "Locked workstation (Win+L)";
+        }
+        for (int i = 0; i < vks.Length; i++) {
+            if (SendVk(vks[i], false, exts[i]) == 0) {
+                for (int j = i - 1; j >= 0; j--) SendVk(vks[j], true, exts[j]);
+                throw new InvalidOperationException("SendInput=0 for " + keySpec);
+            }
+            System.Threading.Thread.Sleep(25);
+        }
+        System.Threading.Thread.Sleep(35);
+        for (int i = vks.Length - 1; i >= 0; i--) {
+            SendVk(vks[i], true, exts[i]);
+            System.Threading.Thread.Sleep(15);
+        }
+        return "Sent real Win32 key " + keySpec;
+    }
+
+    public static void TypeText(string txt, bool enter) {
+        if (!string.IsNullOrEmpty(txt)) {
+            for (int i = 0; i < txt.Length; i++) {
+                INPUT[] inp = new INPUT[2];
+                inp[0].type = INPUT_KEYBOARD; inp[0].U.ki.wScan = (ushort)txt[i]; inp[0].U.ki.dwFlags = KEYEVENTF_UNICODE;
+                inp[1].type = INPUT_KEYBOARD; inp[1].U.ki.wScan = (ushort)txt[i]; inp[1].U.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+                if (SendInput(2, inp, Marshal.SizeOf(typeof(INPUT))) == 0) throw new InvalidOperationException("SendInput=0 while typing");
+                System.Threading.Thread.Sleep(15);
+            }
+        }
+        if (enter) SendKeyOrCombo("Enter");
+    }
 }
 "@
 }
 
+function Test-WorkstationLocked {
+    try {
+        $h = [Win32Input]::OpenInputDesktop(0, $false, 0x0001)
+        if ($h -eq [IntPtr]::Zero) { return $true }
+        [Win32Input]::CloseDesktop($h) | Out-Null
+        return $false
+    } catch {
+        return $false
+    }
+}
+
+function Invoke-WinlogonPipe([hashtable]$payload) {
+    try {
+        $client = New-Object System.IO.Pipes.NamedPipeClientStream(".", "JarvisWinlogonPipe", [System.IO.Pipes.PipeDirection]::InOut)
+        $client.Connect(1200)
+        $json = ($payload | ConvertTo-Json -Compress) + [char]10
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+        $client.Write($bytes, 0, $bytes.Length)
+        $client.Flush()
+        $reader = New-Object System.IO.StreamReader($client, [System.Text.Encoding]::UTF8)
+        $line = $reader.ReadLine()
+        $client.Dispose()
+        if ($line) { return ($line | ConvertFrom-Json) }
+    } catch {}
+    return $null
+}
+
+function Invoke-LockedPipeOrThrow([hashtable]$payload) {
+    $resp = Invoke-WinlogonPipe $payload
+    if ($null -eq $resp) {
+        throw "Kompyuter Win+L bilan qulflangan. Kodni yozib ochish uchun JarvisPcAgent-Setup.bat ni bir marta Administrator sifatida ishga tushiring (JarvisUnlockService)."
+    }
+    if ($resp.ok) { return [string]$resp.data }
+    throw ([string]$resp.error)
+}
+
 function Get-ScreenFrameJson {
-    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-    $g.Dispose()
+    $lockedNow = Test-WorkstationLocked
+    $lockServiceReady = $false
+    $w = 960
+    $h = 540
+    $b64 = ""
 
-    $ms = New-Object System.IO.MemoryStream
-    $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
-    $encParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
-    $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [int64]55)
-    $bmp.Save($ms, $jpegCodec, $encParams)
-    $bmp.Dispose()
+    if (-not $lockedNow) {
+        try {
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $w = $bounds.Width
+            $h = $bounds.Height
+            $bmp = New-Object System.Drawing.Bitmap($w, $h)
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $g.Dispose()
+            $ms = New-Object System.IO.MemoryStream
+            $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+            $encParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
+            $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [int64]55)
+            $bmp.Save($ms, $jpegCodec, $encParams)
+            $bmp.Dispose()
+            $b64 = [Convert]::ToBase64String($ms.ToArray())
+            $ms.Dispose()
+        } catch {
+            $lockedNow = $true
+        }
+    }
 
-    $b64 = [Convert]::ToBase64String($ms.ToArray())
-    $ms.Dispose()
+    if ($lockedNow) {
+        $pipeResp = Invoke-WinlogonPipe @{ cmd = "capture" }
+        if ($pipeResp -and $pipeResp.ok -and $pipeResp.data) {
+            $lockServiceReady = $true
+            $w = [int]$pipeResp.width
+            $h = [int]$pipeResp.height
+            $b64 = [string]$pipeResp.data
+        } else {
+            $w = 960
+            $h = 540
+            $bmp = New-Object System.Drawing.Bitmap($w, $h)
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.Clear([System.Drawing.Color]::FromArgb(7, 11, 20))
+            $font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
+            $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(56, 189, 248))
+            $g.DrawString("PC QULFLANGAN (Win+L)", $font, $brush, 60, 200)
+            $g.Dispose()
+            $ms = New-Object System.IO.MemoryStream
+            $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+            $bmp.Dispose()
+            $b64 = [Convert]::ToBase64String($ms.ToArray())
+            $ms.Dispose()
+        }
+    }
+
     $pos = [System.Windows.Forms.Cursor]::Position
-
     return @{
         type = "agent:frame"
         mimeType = "image/jpeg"
-        width = $bounds.Width
-        height = $bounds.Height
+        width = $w
+        height = $h
         data = $b64
         cursorX = $pos.X
         cursorY = $pos.Y
+        locked = $lockedNow
+        lockServiceReady = $lockServiceReady
         timestamp = [long]([DateTime]::UtcNow - [datetime]'1970-01-01').TotalMilliseconds
     } | ConvertTo-Json -Compress
 }
@@ -68,13 +279,21 @@ function Invoke-AgentTool($msg) {
     switch ($tool) {
         "desktop_screenshot" {
             $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            return @{ width = $bounds.Width; height = $bounds.Height; note = "Captured live real Windows PC frame" }
+            return @{ width = $bounds.Width; height = $bounds.Height; locked = (Test-WorkstationLocked); note = "Captured live real Windows PC frame" }
+        }
+        "unlock_pc" {
+            if ($a.sas) { return (Invoke-LockedPipeOrThrow @{ cmd = "sas" }) }
+            if (-not (Test-WorkstationLocked)) { return "Kompyuter allaqachon ochiq (qulflanmagan)." }
+            $wake = if ($null -ne $a.wake) { [bool]$a.wake } else { $true }
+            return (Invoke-LockedPipeOrThrow @{ cmd = "unlock"; pin = [string]$a.pin; wake = $wake })
         }
         "desktop_move" {
+            if (Test-WorkstationLocked) { return (Invoke-LockedPipeOrThrow @{ cmd = "move"; x = [int]$a.x; y = [int]$a.y }) }
             [Win32Input]::SetCursorPos([int]$a.x, [int]$a.y) | Out-Null
             return "Moved real cursor to ($($a.x), $($a.y))"
         }
         "desktop_click" {
+            if (Test-WorkstationLocked) { return (Invoke-LockedPipeOrThrow @{ cmd = "click"; x = [int]$a.x; y = [int]$a.y; button = [string]$a.button }) }
             [Win32Input]::SetCursorPos([int]$a.x, [int]$a.y) | Out-Null
             Start-Sleep -Milliseconds 40
             if ($a.button -eq "right") {
@@ -93,6 +312,7 @@ function Invoke-AgentTool($msg) {
             return "Clicked $($a.button) at ($($a.x), $($a.y))"
         }
         "desktop_scroll" {
+            if (Test-WorkstationLocked) { return "Ignored scroll on lock screen" }
             $sx = if ($null -ne $a.x) { [int]$a.x } else { 640 }
             $sy = if ($null -ne $a.y) { [int]$a.y } else { 360 }
             [Win32Input]::SetCursorPos($sx, $sy) | Out-Null
@@ -103,17 +323,14 @@ function Invoke-AgentTool($msg) {
         }
         "desktop_type" {
             $txt = [string]$a.text
-            $escaped = $txt -replace '([+^%~(){}\\[\\]])', '{$1}'
-            [System.Windows.Forms.SendKeys]::SendWait($escaped)
-            if ($a.enter) { [System.Windows.Forms.SendKeys]::SendWait("{ENTER}") }
+            if (Test-WorkstationLocked) { return (Invoke-LockedPipeOrThrow @{ cmd = "type"; text = $txt; enter = [bool]$a.enter }) }
+            [Win32Input]::TypeText($txt, [bool]$a.enter)
             return "Typed $($txt.Length) chars"
         }
         "desktop_key" {
             $k = [string]$a.key
-            $map = @{ "Enter" = "{ENTER}"; "Return" = "{ENTER}"; "Tab" = "{TAB}"; "Escape" = "{ESC}"; "Backspace" = "{BACKSPACE}"; "Ctrl+S" = "^s"; "Ctrl+C" = "^c"; "Ctrl+V" = "^v"; "Alt+F4" = "%{F4}"; "Win" = "^{ESC}" }
-            $send = if ($map.ContainsKey($k)) { $map[$k] } else { $k }
-            [System.Windows.Forms.SendKeys]::SendWait($send)
-            return "Sent key $k"
+            if (Test-WorkstationLocked) { return (Invoke-LockedPipeOrThrow @{ cmd = "key"; key = $k }) }
+            return [Win32Input]::SendKeyOrCombo($k)
         }
         "open_app" {
             $app = ([string]$a.app).ToLower()

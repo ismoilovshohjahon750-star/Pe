@@ -481,6 +481,10 @@ class RealWin10Bridge {
             cursorX: Number(msg.cursorX || 0),
             cursorY: Number(msg.cursorY || 0),
             timestamp: now,
+            ...(typeof msg.locked === 'boolean' ? { locked: msg.locked } : {}),
+            ...(typeof msg.lockServiceReady === 'boolean'
+              ? { lockServiceReady: msg.lockServiceReady }
+              : {}),
           };
           rec.latestFrame = frame;
           rec.screenWidth = frame.width;

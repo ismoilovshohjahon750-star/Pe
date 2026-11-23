@@ -767,11 +767,18 @@ class RealLinuxDesktopManager {
       del: 'Delete',
       space: 'space',
       win: 'Super_L',
+      lwin: 'Super_L',
       super: 'Super_L',
+      meta: 'Super_L',
+      windows: 'Super_L',
       up: 'Up',
+      arrowup: 'Up',
       down: 'Down',
+      arrowdown: 'Down',
       left: 'Left',
+      arrowleft: 'Left',
       right: 'Right',
+      arrowright: 'Right',
       home: 'Home',
       end: 'End',
       pageup: 'Prior',
@@ -783,8 +790,8 @@ class RealLinuxDesktopManager {
     const lower = raw.toLowerCase();
     let mapped = keyMap[lower];
     if (!mapped) {
-      // Normalize combos like Ctrl+Shift+T, Ctrl+S, Alt+Left
-      const parts = raw.split('+').map((p) => p.trim());
+      // Normalize combos like Ctrl+Shift+T, Ctrl+S, Alt+Left, Win+D -> super+d
+      const parts = raw.split('+').map((p) => p.trim()).filter(Boolean);
       if (parts.length > 1) {
         mapped = parts
           .map((p, idx) => {
@@ -793,7 +800,9 @@ class RealLinuxDesktopManager {
               if (pl === 'control' || pl === 'ctrl') return 'ctrl';
               if (pl === 'shift') return 'shift';
               if (pl === 'alt') return 'alt';
-              if (pl === 'win' || pl === 'super' || pl === 'meta') return 'super';
+              if (pl === 'win' || pl === 'lwin' || pl === 'super' || pl === 'meta' || pl === 'windows') {
+                return 'super';
+              }
               return pl;
             }
             return keyMap[pl] || (p.length === 1 ? p.toLowerCase() : p);

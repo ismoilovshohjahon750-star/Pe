@@ -334,6 +334,22 @@ async function startServer() {
             });
           }
           break;
+        case 'user:real_unlock':
+          if (realWin10Bridge.getDevices().length > 0) {
+            const unlockRes = await realWin10Bridge.executeOnAgent(
+              'unlock_pc',
+              {
+                pin: String(msg.pin ?? ''),
+                wake: msg.wake === undefined ? true : Boolean(msg.wake),
+                sas: Boolean(msg.sas),
+              },
+              typeof msg.deviceId === 'string' ? msg.deviceId : undefined,
+            );
+            res.json({ ok: true, result: unlockRes });
+            return;
+          }
+          res.status(400).json({ ok: false, error: 'Real PC ulangan emas.' });
+          return;
         default:
           res.status(400).json({ ok: false, error: 'Unsupported input action' });
           return;
@@ -987,19 +1003,27 @@ async function startServer() {
               break;
             case 'user:real_click':
               if (realWin10Bridge.getDevices().length > 0) {
-                await realWin10Bridge.executeOnAgent('desktop_click', {
-                  x: Number(msg.x ?? 0),
-                  y: Number(msg.y ?? 0),
-                  button: msg.button === 'right' || msg.button === 'double' ? msg.button : 'left',
-                }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
+                try {
+                  await realWin10Bridge.executeOnAgent('desktop_click', {
+                    x: Number(msg.x ?? 0),
+                    y: Number(msg.y ?? 0),
+                    button: msg.button === 'right' || msg.button === 'double' ? msg.button : 'left',
+                  }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
+                } catch (err) {
+                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: (err as Error).message }));
+                }
               }
               break;
             case 'user:real_type':
               if (realWin10Bridge.getDevices().length > 0) {
-                await realWin10Bridge.executeOnAgent('desktop_type', {
-                  text: String(msg.text ?? ''),
-                  enter: Boolean(msg.enter),
-                }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
+                try {
+                  await realWin10Bridge.executeOnAgent('desktop_type', {
+                    text: String(msg.text ?? ''),
+                    enter: Boolean(msg.enter),
+                  }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
+                } catch (err) {
+                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: (err as Error).message }));
+                }
               }
               break;
             case 'user:real_scroll':
@@ -1014,9 +1038,29 @@ async function startServer() {
               break;
             case 'user:real_key':
               if (realWin10Bridge.getDevices().length > 0) {
-                await realWin10Bridge.executeOnAgent('desktop_key', {
-                  key: String(msg.key ?? 'Enter'),
-                }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
+                try {
+                  await realWin10Bridge.executeOnAgent('desktop_key', {
+                    key: String(msg.key ?? 'Enter'),
+                  }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
+                } catch (err) {
+                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: (err as Error).message }));
+                }
+              }
+              break;
+            case 'user:real_unlock':
+              if (realWin10Bridge.getDevices().length > 0) {
+                try {
+                  const data = await realWin10Bridge.executeOnAgent('unlock_pc', {
+                    pin: String(msg.pin ?? ''),
+                    wake: msg.wake === undefined ? true : Boolean(msg.wake),
+                    sas: Boolean(msg.sas),
+                  }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
+                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: true, message: typeof data === 'string' ? data : 'OK' }));
+                } catch (err) {
+                  ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: (err as Error).message }));
+                }
+              } else {
+                ws.send(JSON.stringify({ type: 'real:unlock_result', ok: false, error: 'PC agenti ulangan emas.' }));
               }
               break;
             case 'user:linux_move':
