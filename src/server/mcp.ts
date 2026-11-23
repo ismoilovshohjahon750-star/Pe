@@ -246,12 +246,49 @@ const MCP_TOOLS: McpToolDef[] = [
     },
   },
   {
+    name: 'android_action',
+    description:
+      'Execute Android hardware and system commands via Termux:API (torch, vibrate, volume, brightness, toast, notify, speak, clipboard_get, clipboard_set, camera, battery, wifi, media, open_url, share, status) without ADB or Root.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: [
+            'torch',
+            'vibrate',
+            'volume',
+            'brightness',
+            'toast',
+            'notify',
+            'speak',
+            'clipboard_get',
+            'clipboard_set',
+            'camera',
+            'battery',
+            'wifi',
+            'media',
+            'open_url',
+            'share',
+            'status',
+          ],
+          description: 'Android system or hardware action',
+        },
+        value: { type: 'string', description: 'Optional action value or parameter e.g. on/off, up/down, duration, volume level' },
+        text: { type: 'string', description: 'Optional text for toast, notification, TTS speech, clipboard, or URL' },
+        device: { type: 'string', description: 'Target device ID, kind (android, pc), hostname, or "all" (default: active device)' },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'wait',
     description: 'Pause execution for ms milliseconds (100..10000) while waiting for apps, pages, or commands to update on screen.',
     inputSchema: {
       type: 'object',
       properties: {
         ms: { type: 'number', description: 'Milliseconds to wait (default 1000, max 10000)' },
+        device: { type: 'string', description: 'Optional device selector when executing concurrently' },
       },
     },
   },
@@ -556,12 +593,15 @@ async function callMcpTool(name: string, args: Record<string, unknown>) {
           };
         }
       }
-      const agentOut = await realWin10Bridge.executeOnAgent(name, args);
+      const deviceSelector = typeof args.device === 'string' ? args.device : undefined;
+      const cleanArgs = { ...args };
+      delete cleanArgs.device;
+      const agentOut = await realWin10Bridge.executeOnAgent(name, cleanArgs, deviceSelector);
       const textOut = typeof agentOut === 'string' ? agentOut : JSON.stringify(agentOut, null, 2);
       desktopStore.logActivity(
         'mcp',
         name,
-        `[Real Win10] ${JSON.stringify(args).slice(0, 90)}`,
+        `[Real Device] ${JSON.stringify(args).slice(0, 90)}`,
         textOut.slice(0, 140),
         'ok',
         Date.now() - started,

@@ -95,6 +95,8 @@ async function startServer() {
     res.json({
       target: realWin10Bridge.getExecutionTarget(),
       agent: realWin10Bridge.getStatus(),
+      devices: realWin10Bridge.getDevices(),
+      activeDeviceId: realWin10Bridge.getActiveDeviceId(),
       linux: realLinuxDesktop.getStatus(),
     });
   });
@@ -107,11 +109,32 @@ async function startServer() {
     res.json({ target: updated });
   });
 
+  app.get('/api/real-win10/devices', (_req, res) => {
+    res.json({
+      devices: realWin10Bridge.getDevices(),
+      activeDeviceId: realWin10Bridge.getActiveDeviceId(),
+      frames: realWin10Bridge.getAllFrames(),
+    });
+  });
+
+  app.post('/api/real-win10/active-device', (req, res) => {
+    const deviceId = String(req.body?.deviceId || '');
+    const summary = realWin10Bridge.setActiveDevice(deviceId);
+    if (!summary) {
+      res.status(404).json({ ok: false, error: 'Device not found' });
+      return;
+    }
+    res.json({ ok: true, activeDevice: summary });
+  });
+
   app.get('/api/real-win10/frame', (_req, res) => {
+    const deviceId = typeof _req.query.deviceId === 'string' ? _req.query.deviceId : undefined;
     res.json({
       target: realWin10Bridge.getExecutionTarget(),
-      status: realWin10Bridge.getStatus(),
-      frame: realWin10Bridge.getLatestFrame(),
+      status: realWin10Bridge.getStatus(deviceId),
+      frame: realWin10Bridge.getLatestFrame(deviceId),
+      devices: realWin10Bridge.getDevices(),
+      activeDeviceId: realWin10Bridge.getActiveDeviceId(),
     });
   });
 
@@ -658,8 +681,16 @@ async function startServer() {
     broadcastAll({ type: 'real_agent_status', status });
   });
 
+  realWin10Bridge.onDevices((devices, activeDeviceId) => {
+    broadcastAll({ type: 'real_devices', devices, activeDeviceId });
+  });
+
   realWin10Bridge.onFrame((frame) => {
     broadcastFrame({ type: 'real_agent_frame', frame });
+  });
+
+  realWin10Bridge.onDeviceFrame((deviceId, frame) => {
+    broadcastFrame({ type: 'real_agent_frame_for', deviceId, frame });
   });
 
   realWin10Bridge.onTarget((target) => {
@@ -812,37 +843,37 @@ async function startServer() {
               );
               break;
             case 'user:real_click':
-              if (realWin10Bridge.getStatus().connected) {
+              if (realWin10Bridge.getDevices().length > 0) {
                 await realWin10Bridge.executeOnAgent('desktop_click', {
                   x: Number(msg.x ?? 0),
                   y: Number(msg.y ?? 0),
                   button: msg.button === 'right' || msg.button === 'double' ? msg.button : 'left',
-                });
+                }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
               }
               break;
             case 'user:real_type':
-              if (realWin10Bridge.getStatus().connected) {
+              if (realWin10Bridge.getDevices().length > 0) {
                 await realWin10Bridge.executeOnAgent('desktop_type', {
                   text: String(msg.text ?? ''),
                   enter: Boolean(msg.enter),
-                });
+                }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
               }
               break;
             case 'user:real_scroll':
-              if (realWin10Bridge.getStatus().connected) {
+              if (realWin10Bridge.getDevices().length > 0) {
                 await realWin10Bridge.executeOnAgent('desktop_scroll', {
                   x: Number(msg.x ?? 640),
                   y: Number(msg.y ?? 360),
                   direction: Number(msg.deltaY ?? 0) > 0 ? 'down' : 'up',
                   clicks: 3,
-                });
+                }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
               }
               break;
             case 'user:real_key':
-              if (realWin10Bridge.getStatus().connected) {
+              if (realWin10Bridge.getDevices().length > 0) {
                 await realWin10Bridge.executeOnAgent('desktop_key', {
                   key: String(msg.key ?? 'Enter'),
-                });
+                }, typeof msg.deviceId === 'string' ? msg.deviceId : undefined);
               }
               break;
             case 'user:linux_move':

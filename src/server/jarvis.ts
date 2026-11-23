@@ -732,19 +732,25 @@ export async function runJarvisChat(
   const contents = buildGeminiContents(history, message, activeFrame);
 
   const executedTools: string[] = [];
+  const devices = realWin10Bridge.getDevices();
+  const activeDevId = realWin10Bridge.getActiveDeviceId();
   const screenW =
     target === 'real-win10' && realStatus.connected ? realStatus.screenWidth || 1280 : 1280;
   const screenH =
     target === 'real-win10' && realStatus.connected ? realStatus.screenHeight || 720 : 720;
-  const isAndroidTermux =
-    (realStatus.osVersion || '').toLowerCase().includes('android') ||
-    (realStatus.osVersion || '').toLowerCase().includes('termux');
+  const devicesDesc =
+    devices.length > 0
+      ? devices
+          .map(
+            (d) =>
+              `- [id: ${d.id}] ${d.kind.toUpperCase()} (${d.hostname}, OS: ${d.osVersion}, size: ${d.screenWidth}x${d.screenHeight}, active: ${d.active})`,
+          )
+          .join('\n')
+      : 'Hozircha qo‘shimcha tashqi qurilma ulanmagan.';
   const screenInfo =
     target === 'real-win10' && realStatus.connected
-      ? isAndroidTermux
-        ? `Ulangan Android telefon (Termux): ${realStatus.hostname}, ${realStatus.osVersion}, ${screenW}x${screenH}. Terminal (run_bash), fayllar (file_list/file_read/file_write/file_delete), brauzer (browser_navigate) va ADB/Root bo'lsa bosish/yozish to'g'ridan-to'g'ri telefonda bajariladi.`
-        : `Haqiqiy PC (${realStatus.hostname}, ${realStatus.osVersion || 'PC'}, ${screenW}x${screenH})`
-      : `Debian GNU/Linux 12 X11 desktop (${screenW}x${screenH}, DISPLAY=:99, root)`;
+      ? `Ulangan qurilmalar (Jami: ${devices.length}, Faol: ${activeDevId || 'none'}):\n${devicesDesc}\nSiz barcha qo'shilgan qurilmalarni bir vaqtning o'zida yoki alohida boshqara olasiz (device: "android", device: "pc", device: "all").`
+      : `Debian GNU/Linux 12 X11 desktop (${screenW}x${screenH}, DISPLAY=:99, root). Shuningdek tashqi PC yoki Android Termux telefonlarni bir vaqtda ulashingiz mumkin.`;
 
   const systemInstruction = buildJarvisSystemInstruction(screenInfo);
 

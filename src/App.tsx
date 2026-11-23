@@ -11,6 +11,7 @@ import {
   createInitialLinuxStatus,
   createInitialRealAgentStatus,
   pickNewerFrame,
+  type ConnectedDeviceSummary,
   type ExecutionTarget,
   type LinuxDesktopStatus,
   type RealAgentFrame,
@@ -51,14 +52,34 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  const [connectedDevices, setConnectedDevices] = useState<ConnectedDeviceSummary[]>([]);
+  const [deviceFrames, setDeviceFrames] = useState<Record<string, RealAgentFrame>>({});
+  const [splitView, setSplitView] = useState(false);
+  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+
+  const syncRealDevices = useCallback(() => {
+    fetch('/api/real-win10/devices', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((data: { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null; frames?: Record<string, RealAgentFrame> }) => {
+        if (data.devices) {
+          setConnectedDevices(data.devices);
+          if (data.activeDeviceId !== undefined) setActiveDeviceId(data.activeDeviceId);
+          if (data.frames) setDeviceFrames(data.frames);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const syncRealAgentFrame = useCallback(() => {
     fetch('/api/real-win10/frame', { cache: 'no-store' })
       .then((r) => r.json())
-      .then((data: { status?: RealAgentStatus; frame?: RealAgentFrame | null; target?: ExecutionTarget }) => {
+      .then((data: { status?: RealAgentStatus; frame?: RealAgentFrame | null; target?: ExecutionTarget; devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null }) => {
         if (data.status) setRealAgentStatus(data.status);
         if (data.frame) {
           setRealAgentFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
         }
+        if (data.devices) setConnectedDevices(data.devices);
+        if (data.activeDeviceId !== undefined) setActiveDeviceId(data.activeDeviceId);
         if (data.target === 'real-win10' && data.status?.connected) {
           setExecutionTarget('real-win10');
         }
@@ -126,9 +147,21 @@ export default function App() {
               setLinuxFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
             } else if (msg.type === 'real_agent_status' && msg.status) {
               setRealAgentStatus(msg.status as RealAgentStatus);
+            } else if (msg.type === 'real_devices') {
+              const devList = (msg as { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null }).devices;
+              const actId = (msg as { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null }).activeDeviceId;
+              if (devList) setConnectedDevices(devList);
+              if (actId !== undefined) setActiveDeviceId(actId);
             } else if (msg.type === 'real_agent_frame' && msg.frame) {
               lastWsFrameAtRef.current = Date.now();
               setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame ?? null));
+            } else if (msg.type === 'real_agent_frame_for') {
+              const dId = (msg as { deviceId?: string; frame?: RealAgentFrame }).deviceId;
+              const f = (msg as { deviceId?: string; frame?: RealAgentFrame }).frame;
+              if (dId && f) {
+                lastWsFrameAtRef.current = Date.now();
+                setDeviceFrames((prev) => ({ ...prev, [dId]: f }));
+              }
             } else if (msg.type === 'execution_target' && msg.target) {
               setExecutionTarget(msg.target);
             }
@@ -325,13 +358,70 @@ export default function App() {
             <Cpu className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
             <span className="relative z-10">J.A.R.V.I.S.</span>
           </button>
+
+          {/* Connected Device Pills */}
+          <button
+            type="button"
+            onClick={() => {
+              switchTarget('linux');
+              setSplitView(false);
+            }}
+            className={`${LIQUID_PILL_BTN} ${
+              !showingRealPc && !splitView ? 'bg-cyan-500/25 border-cyan-300/60 text-white' : ''
+            }`}
+          >
+            <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            <span className="relative z-10">Linux</span>
+          </button>
+
+          {connectedDevices.map((d) => {
+            const isActive = showingRealPc && (activeDeviceId === d.id || connectedDevices.length === 1);
+            return (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => {
+                  setActiveDeviceId(d.id);
+                  switchTarget('real-win10');
+                  setSplitView(false);
+                  void fetch('/api/real-win10/active-device', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ deviceId: d.id }),
+                  }).catch(() => {});
+                }}
+                className={`${LIQUID_PILL_BTN} ${
+                  isActive && !splitView ? 'bg-emerald-500/25 border-emerald-300/60 text-white' : ''
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10 animate-pulse" aria-hidden="true" />
+                <span className="relative z-10">{d.hostname.slice(0, 14)} ({d.kind})</span>
+              </button>
+            );
+          })}
+
+          {connectedDevices.length >= 2 && (
+            <button
+              type="button"
+              onClick={() => {
+                setSplitView((prev) => !prev);
+                if (!splitView) switchTarget('real-win10');
+              }}
+              className={`${LIQUID_PILL_BTN} ${
+                splitView ? 'bg-purple-500/30 border-purple-300/70 text-white' : ''
+              }`}
+            >
+              <span className="relative z-10">⚡ 2-Ekran Split</span>
+            </button>
+          )}
+
           <button type="button" onClick={() => setPcModalOpen(true)} className={LIQUID_PILL_BTN}>
             {realAgentStatus.connected ? (
               <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10" aria-hidden="true" />
             ) : (
               <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
             )}
-            <span className="relative z-10">PC / Telefon Ulash</span>
+            <span className="relative z-10">Qurilma Qo'shish</span>
           </button>
           <button type="button" onClick={() => setMcpModalOpen(true)} className={LIQUID_PILL_BTN}>
             <Plug className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
@@ -345,15 +435,74 @@ export default function App() {
       </header>
 
       <main className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        {showingRealPc ? (
+        {splitView && connectedDevices.length >= 2 ? (
+          <div className="flex-1 min-h-0 w-full grid grid-cols-1 md:grid-cols-2 gap-2 p-2 bg-[#03060C]">
+            {connectedDevices.slice(0, 2).map((dev) => {
+              const devFrame = deviceFrames[dev.id] || realAgentFrame;
+              const devStatus: RealAgentStatus = {
+                connected: true,
+                hostname: dev.hostname,
+                osVersion: dev.osVersion,
+                username: dev.username,
+                screenWidth: dev.screenWidth,
+                screenHeight: dev.screenHeight,
+                connectedAt: dev.connectedAt,
+                lastFrameAt: dev.lastFrameAt,
+                fps: dev.fps,
+              };
+              return (
+                <div key={dev.id} className="relative flex-1 min-h-0 flex flex-col rounded-2xl overflow-hidden border border-white/15 bg-[#070B14]">
+                  <div className="px-3 py-1.5 bg-black/40 border-b border-white/10 flex items-center justify-between text-xs text-white/90">
+                    <span className="font-medium flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                      {dev.hostname} ({dev.kind})
+                    </span>
+                    <span className="text-[10px] text-white/60">{dev.screenWidth}×{dev.screenHeight}</span>
+                  </div>
+                  <div className="flex-1 min-h-0 relative">
+                    <RealWin10View
+                      status={devStatus}
+                      frame={devFrame}
+                      allowRotate={!jarvisOpen}
+                      onClickAt={(x, y, button) =>
+                        sendWs({ type: 'user:real_click', x, y, button, deviceId: dev.id })
+                      }
+                      onScrollAt={(x, y, deltaY) =>
+                        sendWs({ type: 'user:real_scroll', x, y, deltaY, deviceId: dev.id })
+                      }
+                      onTypeText={(text, enter) =>
+                        sendWs({ type: 'user:real_type', text, enter, deviceId: dev.id })
+                      }
+                      onPressKey={(key) =>
+                        sendWs({ type: 'user:real_key', key, deviceId: dev.id })
+                      }
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : showingRealPc ? (
           <RealWin10View
             status={realAgentStatus}
-            frame={realAgentFrame}
+            frame={
+              activeDeviceId && deviceFrames[activeDeviceId]
+                ? deviceFrames[activeDeviceId]
+                : realAgentFrame
+            }
             allowRotate={!jarvisOpen}
-            onClickAt={(x, y, button) => sendWs({ type: 'user:real_click', x, y, button })}
-            onScrollAt={(x, y, deltaY) => sendWs({ type: 'user:real_scroll', x, y, deltaY })}
-            onTypeText={(text, enter) => sendWs({ type: 'user:real_type', text, enter })}
-            onPressKey={(key) => sendWs({ type: 'user:real_key', key })}
+            onClickAt={(x, y, button) =>
+              sendWs({ type: 'user:real_click', x, y, button, deviceId: activeDeviceId })
+            }
+            onScrollAt={(x, y, deltaY) =>
+              sendWs({ type: 'user:real_scroll', x, y, deltaY, deviceId: activeDeviceId })
+            }
+            onTypeText={(text, enter) =>
+              sendWs({ type: 'user:real_type', text, enter, deviceId: activeDeviceId })
+            }
+            onPressKey={(key) =>
+              sendWs({ type: 'user:real_key', key, deviceId: activeDeviceId })
+            }
           />
         ) : (
           <RealLinuxView
