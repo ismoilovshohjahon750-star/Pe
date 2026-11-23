@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Cpu, Monitor, Plug, Settings, Smartphone } from 'lucide-react';
+import { Cpu, Lock, Monitor, Plug, Settings, Smartphone } from 'lucide-react';
 import { LIQUID_PILL_BTN } from './components/liquidGlass.ts';
 import { JarvisModal } from './components/JarvisModal.tsx';
+import { LockScreen } from './components/LockScreen.tsx';
 import { McpConnectModal } from './components/McpConnectModal.tsx';
 import { PcConnectModal } from './components/PcConnectModal.tsx';
 import { SettingsModal } from './components/SettingsModal.tsx';
 import { RealLinuxView } from './components/RealLinuxView.tsx';
 import { RealWin10View } from './components/RealWin10View.tsx';
+import { authFetch, setOnUnauthorized, setSiteAuthToken } from './utils/siteAuthClient.ts';
 import {
   createInitialLinuxStatus,
   createInitialRealAgentStatus,
@@ -19,6 +21,7 @@ import {
 } from './desktop/bridge.ts';
 
 export default function App() {
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [linuxStatus, setLinuxStatus] = useState<LinuxDesktopStatus>(() =>
     createInitialLinuxStatus(),
   );
@@ -56,17 +59,48 @@ export default function App() {
   const lastWsFrameAtRef = useRef<number>(0);
   const jarvisSyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const handleLockSite = useCallback(async () => {
+    const token = authToken;
+    setSiteAuthToken(null);
+    setAuthToken(null);
+    setJarvisOpen(false);
+    setPcModalOpen(false);
+    setMcpModalOpen(false);
+    setSettingsModalOpen(false);
+    wsRef.current?.close();
+    wsRef.current = null;
+    if (token) {
+      await fetch('/api/auth/lock', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    setSiteAuthToken(authToken);
+    setOnUnauthorized(() => {
+      setSiteAuthToken(null);
+      setAuthToken(null);
+    });
+    return () => {
+      setOnUnauthorized(null);
+    };
+  }, [authToken]);
+
   const syncLinuxFrame = useCallback(() => {
-    fetch('/api/linux/frame', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null }) => {
+    if (!authToken) return;
+    authFetch('/api/linux/frame', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null } | null) => {
+        if (!data) return;
         if (data.status) setLinuxStatus(data.status);
         if (data.frame) {
           setLinuxFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
         }
       })
       .catch(() => {});
-  }, []);
+  }, [authToken]);
 
   const [connectedDevices, setConnectedDevices] = useState<ConnectedDeviceSummary[]>([]);
   const [deviceFrames, setDeviceFrames] = useState<Record<string, RealAgentFrame>>({});
@@ -74,21 +108,23 @@ export default function App() {
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
 
   const syncRealDevices = useCallback(() => {
-    fetch('/api/real-win10/devices', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data: { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null; frames?: Record<string, RealAgentFrame> }) => {
-        if (data.devices) {
+    if (!authToken) return;
+    authFetch('/api/real-win10/devices', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { devices?: ConnectedDeviceSummary[]; activeDeviceId?: string | null; frames?: Record<string, RealAgentFrame> } | null) => {
+        if (data?.devices) {
           setConnectedDevices(data.devices);
           if (data.activeDeviceId !== undefined) setActiveDeviceId(data.activeDeviceId);
           if (data.frames) setDeviceFrames(data.frames);
         }
       })
       .catch(() => {});
-  }, []);
+  }, [authToken]);
 
   const syncRealAgentFrame = useCallback(() => {
-    fetch('/api/real-win10/frame', { cache: 'no-store' })
-      .then((r) => r.json())
+    if (!authToken) return;
+    authFetch('/api/real-win10/frame', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
       .then((data: {
         status?: RealAgentStatus;
         frame?: RealAgentFrame | null;
@@ -96,7 +132,8 @@ export default function App() {
         target?: ExecutionTarget;
         devices?: ConnectedDeviceSummary[];
         activeDeviceId?: string | null;
-      }) => {
+      } | null) => {
+        if (!data) return;
         if (data.status) setRealAgentStatus(data.status);
         if (data.frame) {
           setRealAgentFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
@@ -122,17 +159,18 @@ export default function App() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
+    if (!authToken) return;
     let active = true;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
 
-    fetch('/api/linux/status', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null }) => {
-        if (!active) return;
+    authFetch('/api/linux/status', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { status?: LinuxDesktopStatus; frame?: RealAgentFrame | null } | null) => {
+        if (!active || !data) return;
         if (data.status) setLinuxStatus(data.status);
         if (data.frame) {
           setLinuxFrame((prev) => pickNewerFrame(prev, data.frame ?? null));
@@ -140,10 +178,10 @@ export default function App() {
       })
       .catch(() => {});
 
-    fetch('/api/real-win10/status', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data: { target?: ExecutionTarget; agent?: RealAgentStatus }) => {
-        if (!active) return;
+    authFetch('/api/real-win10/status', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { target?: ExecutionTarget; agent?: RealAgentStatus } | null) => {
+        if (!active || !data) return;
         if (data.agent) setRealAgentStatus(data.agent);
         if (data.target === 'real-win10' && data.agent?.connected) {
           setExecutionTarget('real-win10');
@@ -159,7 +197,9 @@ export default function App() {
       }
       try {
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
+        const socket = new WebSocket(
+          `${proto}//${window.location.host}/ws?token=${encodeURIComponent(authToken)}`,
+        );
         wsRef.current = socket;
 
         socket.onopen = () => {
@@ -322,7 +362,7 @@ export default function App() {
       shareStreamRef.current?.getTracks().forEach((t) => t.stop());
       wsRef.current?.close();
     };
-  }, [syncLinuxFrame, syncRealAgentFrame]);
+  }, [authToken, syncLinuxFrame, syncRealAgentFrame]);
 
   const sendWs = useCallback((payload: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -332,7 +372,7 @@ export default function App() {
     }
     const actionType = String(payload.type || '');
     if (actionType.startsWith('user:linux_') || actionType.startsWith('user:real_')) {
-      void fetch('/api/desktop/input', {
+      void authFetch('/api/desktop/input', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -370,7 +410,7 @@ export default function App() {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'browser_agent:stop', sessionId: prevSession?.sessionId }));
       } else {
-        void fetch('/api/browser-share/stop', {
+        void authFetch('/api/browser-share/stop', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sessionId: prevSession?.sessionId }),
@@ -450,7 +490,7 @@ export default function App() {
           ...shareSessionRef.current,
         }));
       } else {
-        void fetch('/api/browser-share/hello', {
+        void authFetch('/api/browser-share/hello', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(shareSessionRef.current),
@@ -486,7 +526,7 @@ export default function App() {
             }));
           } else if (!httpPostInFlightRef.current) {
             httpPostInFlightRef.current = true;
-            void fetch('/api/browser-share/frame', {
+            void authFetch('/api/browser-share/frame', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -570,7 +610,7 @@ export default function App() {
       userWantsLinuxRef.current = false;
     }
     setExecutionTarget(next);
-    await fetch('/api/real-win10/target', {
+    await authFetch('/api/real-win10/target', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ target: next }),
@@ -584,6 +624,17 @@ export default function App() {
   activeDeviceIdRef.current = activeDeviceId;
   showingRealPcRef.current = showingRealPc;
   browserSharingRef.current = browserSharing;
+
+  if (!authToken) {
+    return (
+      <LockScreen
+        onUnlocked={(token) => {
+          setSiteAuthToken(token);
+          setAuthToken(token);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="h-screen h-[100dvh] w-screen w-full flex flex-col bg-[#03060C] text-slate-100 overflow-hidden">
@@ -646,7 +697,7 @@ export default function App() {
                   setActiveDeviceId(d.id);
                   switchTarget('real-win10');
                   setSplitView(false);
-                  void fetch('/api/real-win10/active-device', {
+                  void authFetch('/api/real-win10/active-device', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ deviceId: d.id }),
@@ -721,6 +772,15 @@ export default function App() {
           <button type="button" onClick={() => setSettingsModalOpen(true)} className={LIQUID_PILL_BTN}>
             <Settings className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
             <span className="relative z-10">Sozlamalar</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleLockSite()}
+            className={LIQUID_PILL_BTN}
+            title="Saytni qulflash"
+          >
+            <Lock className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            <span className="relative z-10">Qulflash</span>
           </button>
         </div>
       </header>
@@ -832,10 +892,10 @@ export default function App() {
             onPressKey={(key) => sendWs({ type: 'user:linux_key', key })}
             onRetry={() => {
               setLinuxStatus((prev) => ({ ...prev, error: null }));
-              void fetch('/api/linux/restart', { method: 'POST' })
-                .then((r) => r.json())
-                .then((data: { status?: LinuxDesktopStatus }) => {
-                  if (data.status) setLinuxStatus(data.status);
+              void authFetch('/api/linux/restart', { method: 'POST' })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((data: { status?: LinuxDesktopStatus } | null) => {
+                  if (data?.status) setLinuxStatus(data.status);
                 })
                 .catch(() => {});
             }}

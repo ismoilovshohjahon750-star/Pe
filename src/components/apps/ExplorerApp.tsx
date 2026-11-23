@@ -10,6 +10,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { DesktopWindow, FileEntry } from '../../desktop/types.ts';
+import { authFetch } from '../../utils/siteAuthClient.ts';
 
 interface ExplorerAppProps {
   win: DesktopWindow;
@@ -50,7 +51,7 @@ export function ExplorerApp({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/fs/list?path=${encodeURIComponent(dirPath)}`);
+      const res = await authFetch(`/api/fs/list?path=${encodeURIComponent(dirPath)}`);
       const data = (await res.json()) as { winPath?: string; entries?: FileEntry[]; error?: string };
       if (!res.ok) throw new Error(data.error || 'Failed to read directory');
       setEntries(data.entries || []);
@@ -83,7 +84,7 @@ export function ExplorerApp({
       return;
     }
     try {
-      const res = await fetch(`/api/fs/read?path=${encodeURIComponent(entry.winPath)}`);
+      const res = await authFetch(`/api/fs/read?path=${encodeURIComponent(entry.winPath)}`);
       const data = (await res.json()) as { content?: string; error?: string };
       if (!res.ok) throw new Error(data.error || 'Failed to read file');
       onOpenFileInNotepad(entry.winPath, data.content ?? '');
@@ -101,13 +102,13 @@ export function ExplorerApp({
       : `${currentPath}\\${trimmed}`;
     try {
       if (creatingType === 'folder') {
-        await fetch('/api/fs/mkdir', {
+        await authFetch('/api/fs/mkdir', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: targetPath }),
         });
       } else {
-        await fetch('/api/fs/write', {
+        await authFetch('/api/fs/write', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: targetPath, content: '' }),
@@ -123,7 +124,7 @@ export function ExplorerApp({
 
   const handleDeleteSelected = async () => {
     if (!selectedPath) return;
-    await fetch(`/api/fs/delete?path=${encodeURIComponent(selectedPath)}`, {
+    await authFetch(`/api/fs/delete?path=${encodeURIComponent(selectedPath)}`, {
       method: 'DELETE',
     });
     setSelectedPath(null);

@@ -7,6 +7,7 @@ import {
   prepareTextForSpeech,
   stepVadState,
 } from '../utils/voiceSession';
+import { authFetch } from '../utils/siteAuthClient.ts';
 
 interface JarvisMessage {
   id: string;
@@ -229,7 +230,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
         typeof ReadableStream !== 'undefined' && typeof TextDecoder !== 'undefined';
 
       try {
-        const res = await fetch('/api/jarvis/chat', {
+        const res = await authFetch('/api/jarvis/chat', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -480,7 +481,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
       fetchAbortRef.current = controller;
 
       try {
-        const res = await fetch('/api/jarvis/tts', {
+        const res = await authFetch('/api/jarvis/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: cleanedSpeech }),
@@ -674,7 +675,7 @@ export function JarvisModal({ open, onClose, onToolActivity }: JarvisModalProps)
                 return;
               }
 
-              const res = await fetch('/api/jarvis/transcribe', {
+              const res = await authFetch('/api/jarvis/transcribe', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ audioBase64: base64, mimeType: finalMimeType }),

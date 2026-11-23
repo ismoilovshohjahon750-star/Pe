@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Check, Copy, Download, Monitor, MonitorUp, Smartphone, Square, Terminal, X } from 'lucide-react';
 import type { ExecutionTarget, RealAgentStatus } from '../desktop/bridge.ts';
 import { copyTextCrossBrowser } from '../utils/clipboard.ts';
+import { authFetch } from '../utils/siteAuthClient.ts';
 import {
   LIQUID_CARD,
   LIQUID_ICON_BTN,
@@ -76,7 +77,7 @@ export function PcConnectModal({
     setStreamBusy(true);
     setStreamFeedback(null);
     try {
-      const resp = await fetch('/api/real-win10/stream-url', {
+      const resp = await authFetch('/api/real-win10/stream-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
