@@ -174,12 +174,53 @@ export function PcConnectModal({
 
           {deviceTab === 'android' ? (
             <>
+              {/* Android No-ADB Browser Screen Share Card */}
+              <div className={`${LIQUID_CARD} p-4 space-y-3.5`}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 font-semibold text-white">
+                      <MonitorUp className="w-4 h-4 text-emerald-300" strokeWidth={1.75} />
+                      <span>1-usul: Telefonda Brauzer orqali Ekran Ulashish (100% ADB siz!)</span>
+                    </div>
+                    <p className="text-white/70 mt-1 leading-relaxed">
+                      Telefonda Chrome (yoki Firefox) brauzerida saytga kiring va quyidagi tugmani bosing. Android tizimi darhol
+                      <em> "Translatsiyani boshlash"</em> so‘rovini chiqaradi. Boshlangandan so‘ng brauzerni qoldirib Termuxga o‘tishingiz mumkin —
+                      Termux buyruqlarni boshqaradi, brauzer esa to‘liq ekranni jonli uzatadi!
+                    </p>
+                  </div>
+                  {browserSharing ? (
+                    <button
+                      type="button"
+                      onClick={onStopBrowserShare}
+                      className={`${LIQUID_PILL_BTN} bg-rose-500/20 border-rose-300/40 hover:bg-rose-500/30`}
+                    >
+                      <Square className="w-3.5 h-3.5 relative z-10" strokeWidth={1.75} />
+                      <span className="relative z-10">Translatsiyani to‘xtatish</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={onStartBrowserShare}
+                      className={LIQUID_PILL_BTN}
+                    >
+                      <MonitorUp className="w-3.5 h-3.5 relative z-10" strokeWidth={1.75} />
+                      <span className="relative z-10">📲 Telefonda Ekranni Ulashish</span>
+                    </button>
+                  )}
+                </div>
+                {shareError && (
+                  <div className="text-rose-200 rounded-2xl bg-rose-500/15 border border-rose-300/30 px-3.5 py-2">
+                    {shareError}
+                  </div>
+                )}
+              </div>
+
               {/* Android Termux Main Card */}
               <div className={`${LIQUID_CARD} p-4 space-y-3.5`}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 font-semibold text-white">
                     <Smartphone className="w-4 h-4 text-cyan-300" strokeWidth={1.75} />
-                    <span>1-usul: Termux orqali Android telefonni ulash</span>
+                    <span>2-usul: Termux Agent (Bash + Fayllar + Termux:API Boshqaruv)</span>
                   </div>
                   <a
                     href="/api/android-termux-agent.py"
@@ -193,7 +234,7 @@ export function PcConnectModal({
                 <p className="text-white/70 leading-relaxed">
                   Root talab qilinmaydi. Telefoningizdagi <span className="font-mono-tabular text-white/95">Termux</span> ilovasiga
                   quyidagi buyruqni qo‘ysangiz kifoya — <span className="font-mono-tabular text-cyan-200">bash</span>, fayllar va
-                  brauzerda URL ochish darhol ishga tushadi, <span className="font-mono-tabular">termux-wake-lock</span> esa fon ulanishini ushlab turadi.
+                  interaktiv boshqaruv ekrani ishga tushadi, <span className="font-mono-tabular">termux-wake-lock</span> esa fon ulanishini ushlab turadi.
                 </p>
 
                 <div className="space-y-2">
@@ -223,43 +264,60 @@ export function PcConnectModal({
                 </div>
               </div>
 
-              {/* Android Live Screen + Touch via ADB / Root */}
-              <div className={`${LIQUID_CARD} p-4 space-y-3`}>
+              {/* Android Live Screen + Touch via Termux 2nd Session Wireless ADB */}
+              <div className={`${LIQUID_CARD} p-4 space-y-3.5`}>
                 <div className="flex items-center gap-2 font-semibold text-white">
-                  <Terminal className="w-4 h-4 text-emerald-300" strokeWidth={1.75} />
-                  <span>2-usul: Jonli Android ekran + sensorli bosish (ixtiyoriy ADB / Root)</span>
+                  <Terminal className="w-4 h-4 text-amber-300" strokeWidth={1.75} />
+                  <span>3-usul: Termux 2-sessiya orqali Kompyutersiz ADB (Android 11+)</span>
                 </div>
                 <p className="text-white/70 leading-relaxed">
-                  Agar telefoningiz ekranini jonli ko‘rish va ekranga bosib boshqarishni istasangiz:
-                  Sozlamalar → Dasturchi parametrlari → <strong>Simsiz nosozliklarni tuzatish (Wireless debugging)</strong> ni yoqing,
-                  u yerda ko‘rsatilgan IP-manzil va Portni yozing (masalan: <span className="font-mono-tabular text-cyan-200">adb connect 192.168.1.50:43821</span>).
-                  Root qilingan telefonlarda esa <span className="font-mono-tabular">su</span> avtomatik aniqlanadi va ADB shart emas.
+                  <strong>Kompyuter kerak emas!</strong> Android 11, 12, 13, 14, 15 da telefonning o‘zida Termux o‘ziga-o‘zi ADB ulana oladi:
+                  <br />
+                  1. Sozlamalar → Dasturchi parametrlari → <strong>Simsiz nosozliklarni tuzatish</strong> (Wireless debugging) ga kiring → "Qurilmani ulash kodi bilan ulash" (Pair with pairing code) ni bosing.
+                  <br />
+                  2. <strong>Termux 2-sessiyasida</strong> (chapdan surib "New session" ochib) quyidagi buyruqni bering:
                 </p>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-[11px] text-white/70">
-                    <span>ADB va Termux:API paketlarini qo‘shish:</span>
+                    <span>Termux 2-sessiyasida lokal ulash buyrug‘i:</span>
                     <button
                       type="button"
-                      onClick={() => copyText('adb', termuxAdbCommand)}
+                      onClick={() => copyText('adb-pair', 'pkg install -y android-tools && adb pair 127.0.0.1:<PAIR_PORT> <KOD> && adb connect 127.0.0.1:<CONNECT_PORT>')}
                       className={`${LIQUID_PILL_BTN} px-3 py-1`}
                     >
-                      {copiedStep === 'adb' ? (
+                      {copiedStep === 'adb-pair' ? (
                         <Check className="w-3 h-3 text-emerald-300 relative z-10" strokeWidth={2} />
                       ) : (
                         <Copy className="w-3 h-3 relative z-10" strokeWidth={1.75} />
                       )}
-                      <span className="relative z-10">{copiedStep === 'adb' ? 'Nusxalandi' : 'Nusxalash'}</span>
+                      <span className="relative z-10">{copiedStep === 'adb-pair' ? 'Nusxalandi' : 'Nusxalash'}</span>
                     </button>
                   </div>
                   <input
                     type="text"
                     readOnly
-                    value={termuxAdbCommand}
+                    value="pkg install -y android-tools && adb pair 127.0.0.1:<PAIR_PORT> <KOD> && adb connect 127.0.0.1:<CONNECT_PORT>"
                     onClick={(e) => e.currentTarget.select()}
-                    aria-label="Termux ADB paketlari buyrug'i"
+                    aria-label="Termux 2-sessiya ADB pair va connect buyrug'i"
                     className={LIQUID_INPUT}
                   />
                 </div>
+                <p className="text-[11px] text-amber-200/90">
+                  Ulangach, 1-sessiyadagi <span className="font-mono-tabular">android-termux-agent.py</span> avtomatik to‘liq jonli ekran va sensorli bosishlarga (touch) o‘tadi!
+                </p>
+              </div>
+
+              {/* Android Local HTTP Screen Stream (No-ADB) */}
+              <div className={`${LIQUID_CARD} p-4 space-y-3`}>
+                <div className="flex items-center gap-2 font-semibold text-white">
+                  <Monitor className="w-4 h-4 text-cyan-300" strokeWidth={1.75} />
+                  <span>4-usul: "Screen Stream over HTTP" ilovasi (100% ADB siz, No-Root)</span>
+                </div>
+                <p className="text-white/70 leading-relaxed">
+                  Play Market yoki F-Droid dan ochiq kodli <strong>"Screen Stream over HTTP"</strong> ilovasini o‘rnatib "Start" tugmasini bosing.
+                  U Android tizimining ruxsati bilan <span className="font-mono-tabular text-cyan-200">http://127.0.0.1:8080</span> manzilida ekran tasvirini beradi.
+                  Termux agentimiz uni avtomatik aniqlab, darhol serverga jonli uzatadi!
+                </p>
               </div>
             </>
           ) : (

@@ -31,6 +31,7 @@ import struct
 import subprocess
 import sys
 import time
+import urllib.request
 import zlib
 from pathlib import Path
 
@@ -504,6 +505,31 @@ def capture_frame_payload() -> dict:
         except Exception:
             pass
 
+    local_stream = fetch_local_http_stream()
+    if local_stream:
+        DEVICE_INFO["screen_mode"] = "HTTP-STREAM"
+        mime = "image/jpeg" if local_stream[:2] == b"\\xff\\xd8" else "image/png"
+        sw, sh = parse_png_dimensions(local_stream) if mime == "image/png" else (int(DEVICE_INFO["screen_w"]), int(DEVICE_INFO["screen_h"]))
+        if HAS_PIL and mime == "image/jpeg":
+            try:
+                im = Image.open(io.BytesIO(local_stream))
+                sw, sh = im.size
+                DEVICE_INFO["screen_w"] = sw
+                DEVICE_INFO["screen_h"] = sh
+            except Exception:
+                pass
+        return {
+            "type": "agent:frame",
+            "mimeType": mime,
+            "width": sw,
+            "height": sh,
+            "data": base64.b64encode(local_stream).decode("ascii"),
+            "cursorX": 0,
+            "cursorY": 0,
+            "mode": "HTTP-STREAM",
+            "timestamp": int(time.time() * 1000),
+        }
+
     DEVICE_INFO["screen_mode"] = "TERMUX-PRO"
     DEVICE_INFO["screen_w"] = 540
     DEVICE_INFO["screen_h"] = 960
@@ -519,6 +545,28 @@ def capture_frame_payload() -> dict:
         "mode": "TERMUX-PRO",
         "timestamp": int(time.time() * 1000),
     }
+
+
+def fetch_local_http_stream() -> bytes | None:
+    custom_url = os.environ.get("SCREEN_STREAM_URL")
+    urls = [custom_url] if custom_url else [
+        "http://127.0.0.1:8080/live.jpg",
+        "http://127.0.0.1:8080/screenshot.jpg",
+        "http://127.0.0.1:8080/screen.jpg",
+        "http://localhost:8080/live.jpg",
+    ]
+    for url in urls:
+        if not url:
+            continue
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "JARVIS-Agent"})
+            with urllib.request.urlopen(req, timeout=0.5) as resp:
+                data = resp.read()
+                if len(data) > 1000 and (data[:2] == b"\\xff\\xd8" or data[:8] == b"\\x89PNG\\r\\n\\x1a\\n"):
+                    return data
+        except Exception:
+            pass
+    return None
 
 
 def run_android_input(cmd_args: list[str]) -> str:
