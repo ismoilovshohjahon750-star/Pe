@@ -208,6 +208,29 @@ export function RealWin10View({
             onTypeText={onTypeText}
             onPressKey={onPressKey}
           />
+
+          {frame.width === 960 && frame.height === 540 && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 bg-slate-900/90 backdrop-blur-xl border border-sky-400/40 rounded-2xl px-4 py-2.5 flex flex-wrap items-center gap-3 shadow-2xl text-xs">
+              <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-pulse" />
+              <span className="text-sky-200 font-medium">🔒 PC Qulflangan (Win+L) — Fonda MCP &amp; PowerShell faol</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onPressKey('Enter')}
+                  className="px-2.5 py-1 rounded-xl bg-sky-500/30 hover:bg-sky-500/50 border border-sky-300/50 text-white font-medium transition"
+                >
+                  🔓 Qulfni Uyg&apos;otish (Enter)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onTypeText('powershell', true)}
+                  className="px-2.5 py-1 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white transition"
+                >
+                  ⚡ PowerShell
+                </button>
+              </div>
+            </div>
+          )}
         </>
       ) : (
         <div className="text-center space-y-2 p-6">
