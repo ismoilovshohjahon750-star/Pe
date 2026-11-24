@@ -162,7 +162,7 @@ export function RemoteScreenKeyboardBridge({
           autoCorrect="off"
           autoCapitalize="none"
           spellCheck={false}
-          aria-label="Telefon klaviaturasi kiritish"
+          aria-label="Ekran klaviaturasi kiritish"
           className="w-full h-full bg-transparent text-[16px] text-transparent caret-transparent border-0 outline-none p-0 m-0"
           onFocus={(e) => {
             if (!e.currentTarget.value) {
@@ -201,7 +201,7 @@ export function RemoteScreenKeyboardBridge({
           }
         }}
         aria-pressed={keyboardFocused}
-        aria-label={keyboardFocused ? 'Klaviaturani yopish' : 'Telefon klaviaturasini ochish'}
+        aria-label={keyboardFocused ? 'Klaviaturani yopish' : 'Ekran klaviaturasini ochish'}
         title={keyboardFocused ? 'Klaviaturani yopish' : 'Klaviatura'}
         className={`absolute bottom-3 right-3 z-20 inline-flex items-center justify-center w-9 h-9 rounded-full border transition-all duration-150 cursor-pointer ${
           keyboardFocused

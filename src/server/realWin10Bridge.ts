@@ -124,6 +124,8 @@ class RealWin10Bridge {
           const wasReconnecting = Boolean(this.status.reconnecting);
           const width = Number(msg.width || this.status.screenWidth);
           const height = Number(msg.height || this.status.screenHeight);
+          const screenWidth = Number(msg.screenWidth || this.status.screenWidth || width);
+          const screenHeight = Number(msg.screenHeight || this.status.screenHeight || height);
           const frame: RealAgentFrame = {
             mimeType: String(msg.mimeType || 'image/jpeg'),
             width,
@@ -141,8 +143,8 @@ class RealWin10Bridge {
             reconnecting: false,
             locked,
             desktopName,
-            screenWidth: width,
-            screenHeight: height,
+            screenWidth,
+            screenHeight,
             lastFrameAt: now,
             fps,
           };

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Cpu, Monitor, Plug, Settings } from 'lucide-react';
+import { Cpu, Plug, Settings } from 'lucide-react';
 import { LIQUID_PILL_BTN } from './components/liquidGlass.ts';
 import { JarvisModal } from './components/JarvisModal.tsx';
 import { McpConnectModal } from './components/McpConnectModal.tsx';
@@ -34,7 +34,9 @@ export default function App() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const lastWsFrameAtRef = useRef<number>(0);
+  const executionTargetRef = useRef<ExecutionTarget>('linux');
   const jarvisSyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  executionTargetRef.current = executionTarget;
 
   const syncLinuxFrame = useCallback(() => {
     fetch('/api/linux/frame', { cache: 'no-store' })
@@ -117,13 +119,26 @@ export default function App() {
           if (!active) return;
           try {
             const msg = JSON.parse(event.data) as Record<string, unknown>;
-            if (msg.type === 'linux:frame' && msg.frame) {
-              setLinuxFrame((prev) => pickNewerFrame(prev, msg.frame as RealAgentFrame));
-            } else if (msg.type === 'real:frame' && msg.frame) {
-              setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame as RealAgentFrame));
-              lastWsFrameAtRef.current = Date.now();
-            } else if (msg.type === 'real:status' && msg.status) {
-              setRealAgentStatus(msg.status as RealAgentStatus);
+            if (msg.type === 'linux_frame' || msg.type === 'linux:frame') {
+              if (msg.frame) {
+                setLinuxFrame((prev) => pickNewerFrame(prev, msg.frame as RealAgentFrame));
+                lastWsFrameAtRef.current = Date.now();
+              }
+            } else if (msg.type === 'real_agent_frame' || msg.type === 'real:frame') {
+              if (msg.frame) {
+                setRealAgentFrame((prev) => pickNewerFrame(prev, msg.frame as RealAgentFrame));
+                lastWsFrameAtRef.current = Date.now();
+              }
+            } else if (msg.type === 'real_agent_status' || msg.type === 'real:status') {
+              if (msg.status) {
+                setRealAgentStatus(msg.status as RealAgentStatus);
+              }
+            } else if (msg.type === 'linux_status' || msg.type === 'linux:status') {
+              if (msg.status) {
+                setLinuxStatus(msg.status as LinuxDesktopStatus);
+              }
+            } else if (msg.type === 'execution_target' && typeof msg.target === 'string') {
+              setExecutionTarget(msg.target as ExecutionTarget);
             }
           } catch {}
         };
@@ -152,7 +167,7 @@ export default function App() {
         connect();
       } else if (Date.now() - lastWsFrameAtRef.current > 3500) {
         syncLinuxFrame();
-        if (executionTarget === 'real-win10') {
+        if (executionTargetRef.current === 'real-win10') {
           syncRealAgentFrame();
         }
       }
@@ -165,7 +180,7 @@ export default function App() {
       if (jarvisSyncTimerRef.current) clearInterval(jarvisSyncTimerRef.current);
       wsRef.current?.close();
     };
-  }, [syncLinuxFrame, syncRealAgentFrame, executionTarget]);
+  }, [syncLinuxFrame, syncRealAgentFrame]);
 
   const sendWs = useCallback((payload: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -182,6 +197,20 @@ export default function App() {
       }).catch(() => {});
     }
   }, []);
+
+  useEffect(() => {
+    if (!pcModalOpen && !mcpModalOpen && !settingsModalOpen && !jarvisOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      if (pcModalOpen) setPcModalOpen(false);
+      else if (mcpModalOpen) setMcpModalOpen(false);
+      else if (settingsModalOpen) setSettingsModalOpen(false);
+      else if (jarvisOpen) setJarvisOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [pcModalOpen, mcpModalOpen, settingsModalOpen, jarvisOpen]);
 
   const switchTarget = async (next: ExecutionTarget) => {
     setExecutionTarget(next);
@@ -222,7 +251,7 @@ export default function App() {
     };
   };
 
-  const showingRealPc = executionTarget === 'real-win10' && realAgentStatus.connected;
+  const showingRealPc = executionTarget === 'real-win10';
 
   return (
     <div className="h-screen h-[100dvh] w-screen w-full flex flex-col bg-[#03060C] text-slate-100 overflow-hidden">
@@ -244,51 +273,16 @@ export default function App() {
             <span className="relative z-10">J.A.R.V.I.S.</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => switchTarget('linux')}
-            className={`${LIQUID_PILL_BTN} ${
-              !showingRealPc ? 'bg-cyan-500/25 border-cyan-300/60 text-white' : ''
-            }`}
-          >
-            <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
-            <span className="relative z-10">Linux</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => switchTarget('real-win10')}
-            className={`${LIQUID_PILL_BTN} ${
-              showingRealPc ? 'bg-emerald-500/25 border-emerald-300/60 text-white' : ''
-            }`}
-          >
-            <span
-              className={`w-2 h-2 rounded-full relative z-10 ${
-                realAgentStatus.connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'
-              }`}
-              aria-hidden="true"
-            />
-            <span className="relative z-10">Real Windows PC</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setPcModalOpen(true)}
-            className={LIQUID_PILL_BTN}
-          >
-            {realAgentStatus.connected ? (
-              <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10" aria-hidden="true" />
-            ) : (
-              <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
-            )}
-            <span className="relative z-10">PC Agent O'rnatish</span>
-          </button>
           <button type="button" onClick={() => setMcpModalOpen(true)} className={LIQUID_PILL_BTN}>
             <Plug className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
             <span className="relative z-10">MCP Ulash</span>
           </button>
           <button type="button" onClick={() => setSettingsModalOpen(true)} className={LIQUID_PILL_BTN}>
-            <Settings className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            {realAgentStatus.connected ? (
+              <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10" aria-hidden="true" />
+            ) : (
+              <Settings className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+            )}
             <span className="relative z-10">Sozlamalar</span>
           </button>
         </div>
@@ -313,6 +307,7 @@ export default function App() {
               sendWs({ type: 'user:real_key', key })
             }
             onUnlockPc={(payload) => unlockRealPc(payload)}
+            onOpenPcModal={() => setPcModalOpen(true)}
           />
         ) : (
           <RealLinuxView
@@ -378,6 +373,13 @@ export default function App() {
 
       <SettingsModal
         open={settingsModalOpen}
+        executionTarget={executionTarget}
+        realAgentStatus={realAgentStatus}
+        onSwitchTarget={(t) => void switchTarget(t)}
+        onOpenPcModal={() => {
+          setSettingsModalOpen(false);
+          setPcModalOpen(true);
+        }}
         onClose={() => setSettingsModalOpen(false)}
       />
     </div>

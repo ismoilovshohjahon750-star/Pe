@@ -30,7 +30,7 @@ const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'desktop_screenshot',
     description:
-      'Capture a live screenshot of the active desktop or connected device (Linux X11, Windows PC, or Android).',
+      'Capture a live screenshot of the active desktop or connected PC (Linux X11 or Windows PC).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -176,7 +176,7 @@ const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'run_bash',
     description:
-      'Execute any bash/shell command on the active desktop or connected PC/Android device.',
+      'Execute any bash/shell command on the active desktop or connected Windows PC.',
     inputSchema: {
       type: 'object',
       properties: {

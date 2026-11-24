@@ -631,7 +631,7 @@ async function startServer() {
   const broadcastFrame = (payloadObj: Record<string, unknown>) => {
     const payload = JSON.stringify(payloadObj);
     for (const client of wss.clients) {
-      if (shouldSendToWsClient(client.readyState, client.bufferedAmount)) {
+      if (shouldSendToWsClient(client.readyState, client.bufferedAmount, 512 * 1024)) {
         client.send(payload);
       }
     }

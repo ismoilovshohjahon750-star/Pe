@@ -24,6 +24,7 @@ interface RealWin10ViewProps {
   onTypeText: (text: string, enter: boolean) => void;
   onPressKey: (key: string) => void;
   onUnlockPc?: (payload: { pin?: string; wake?: boolean; sas?: boolean }) => Promise<{ ok: boolean; message?: string; error?: string }>;
+  onOpenPcModal?: () => void;
 }
 
 const SPECIAL_KEY_MAP: Record<string, string> = {
@@ -51,6 +52,7 @@ export function RealWin10View({
   onTypeText,
   onPressKey,
   onUnlockPc,
+  onOpenPcModal,
 }: RealWin10ViewProps) {
   const lastWheelAt = useRef(0);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -91,8 +93,8 @@ export function RealWin10View({
     };
   }, []);
 
-  const screenW = frame?.width || status.screenWidth || 1920;
-  const screenH = frame?.height || status.screenHeight || 1080;
+  const screenW = status.screenWidth || frame?.width || 1920;
+  const screenH = status.screenHeight || frame?.height || 1080;
   const isLocked = Boolean(frame?.locked ?? status.locked);
   const isReconnecting = Boolean(status.reconnecting);
 
@@ -205,6 +207,7 @@ export function RealWin10View({
             src={`data:${frame.mimeType};base64,${frame.data}`}
             alt="Connected real PC live stream"
             draggable={false}
+            decoding="sync"
             style={{
               width: `${fitW}px`,
               height: `${fitH}px`,
@@ -241,14 +244,14 @@ export function RealWin10View({
             className="shrink-0 select-none cursor-default"
           />
 
-          {isReconnecting && (
+          {(isReconnecting || !status.connected) && (
             <div
               role="status"
               aria-live="polite"
               className="absolute top-3 left-1/2 -translate-x-1/2 z-20 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#0F172A]/90 supports-[backdrop-filter]:bg-[#0F172A]/75 supports-[backdrop-filter]:backdrop-blur-xl border border-amber-300/35 text-xs font-medium text-amber-100 shadow-[0_6px_20px_rgba(0,0,0,0.5)]"
             >
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" aria-hidden="true" />
-              <span>Aloqa tiklanmoqda...</span>
+              <span>{isReconnecting ? 'Aloqa tiklanmoqda...' : 'PC ulanishi kutilmoqda...'}</span>
             </div>
           )}
 
@@ -357,10 +360,22 @@ export function RealWin10View({
           />
         </>
       ) : (
-        <div className="text-center space-y-2 p-6">
-          <div className="text-sm font-medium text-slate-200">
+        <div className="text-center space-y-3 p-6 max-w-md">
+          <div className="text-sm font-medium text-slate-100">
             Haqiqiy PC ekrani kutilmoqda...
           </div>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Windows kompyuteringizda JarvisPcAgent.exe yoki real-pc-agent.py ishga tushirilgach, jonli ekran shu yerda ochiladi va Win+L qulfidan keyin ham aloqa uzilmaydi.
+          </p>
+          {onOpenPcModal && (
+            <button
+              type="button"
+              onClick={onOpenPcModal}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-300/45 text-cyan-100 transition-colors cursor-pointer"
+            >
+              PC Agent O'rnatish
+            </button>
+          )}
         </div>
       )}
     </div>

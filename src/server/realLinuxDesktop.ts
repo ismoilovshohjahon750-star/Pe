@@ -77,7 +77,7 @@ class RealLinuxDesktopManager {
     };
     this.latestFrame = frame;
 
-    if (force || shouldBroadcastFrame(this.lastBroadcastJpeg, jpeg, now - this.lastBroadcastAt, 4000)) {
+    if (force || shouldBroadcastFrame(this.lastBroadcastJpeg, jpeg, now - this.lastBroadcastAt, 2000)) {
       this.lastBroadcastJpeg = Buffer.from(jpeg);
       this.lastBroadcastAt = now;
       for (const fn of this.frameListeners) fn(frame);
@@ -588,18 +588,22 @@ class RealLinuxDesktopManager {
       [
         '-loglevel',
         'error',
+        '-fflags',
+        'nobuffer',
         '-f',
         'x11grab',
         '-draw_mouse',
         '1',
         '-framerate',
-        '6',
+        '12',
         '-video_size',
         `${SCREEN_W}x${SCREEN_H}`,
         '-i',
         DISPLAY,
         '-q:v',
-        '8',
+        '9',
+        '-flush_packets',
+        '1',
         '-f',
         'image2pipe',
         '-vcodec',

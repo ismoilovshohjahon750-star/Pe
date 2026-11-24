@@ -154,6 +154,7 @@ export function RealLinuxView({
             src={`data:${frame.mimeType};base64,${frame.data}`}
             alt="Debian 12 Linux X11 desktop live stream"
             draggable={false}
+            decoding="sync"
             style={{
               width: `${fitW}px`,
               height: `${fitH}px`,

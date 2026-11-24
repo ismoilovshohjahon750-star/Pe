@@ -78,47 +78,60 @@ def render_locked_frame() -> tuple[int, int, bytes]:
     return w, h, buf.getvalue()
 
 
-def capture_frame_payload() -> dict:
+_MSS_SCT = None
+
+
+def _get_mss():
+    global _MSS_SCT
+    if _MSS_SCT is None:
+        _MSS_SCT = mss.mss()
+    return _MSS_SCT
+
+
+def capture_frame_raw() -> tuple[bytes, int, int, int, int, int, int, bool, str]:
     keep_windows_awake()
     is_locked, desk_name = try_attach_input_desktop()
     try:
-        with mss.mss() as sct:
-            monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-            raw = sct.grab(monitor)
-            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=55)
-            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            try:
-                cx, cy = pyautogui.position()
-            except Exception:
-                cx, cy = 0, 0
-            return {
-                "type": "agent:frame",
-                "mimeType": "image/jpeg",
-                "width": raw.width,
-                "height": raw.height,
-                "data": b64,
-                "cursorX": int(cx),
-                "cursorY": int(cy),
-                "timestamp": int(time.time() * 1000),
-                "locked": bool(is_locked),
-                "desktopName": desk_name,
-            }
+        sct = _get_mss()
+        monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+        raw = sct.grab(monitor)
+        actual_w, actual_h = raw.width, raw.height
+        img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+        out_w, out_h = actual_w, actual_h
+        if out_w > 1280:
+            out_h = int(out_h * 1280 / out_w)
+            out_w = 1280
+            img = img.resize((out_w, out_h), Image.BILINEAR)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=50)
+        try:
+            cx, cy = pyautogui.position()
+        except Exception:
+            cx, cy = 0, 0
+        return buf.getvalue(), out_w, out_h, actual_w, actual_h, int(cx), int(cy), bool(is_locked), desk_name
     except Exception:
+        global _MSS_SCT
+        _MSS_SCT = None
         w, h, jpg = render_locked_frame()
-        return {
-            "type": "agent:frame",
-            "mimeType": "image/jpeg",
-            "width": w,
-            "height": h,
-            "data": base64.b64encode(jpg).decode("ascii"),
-            "cursorX": 0,
-            "cursorY": 0,
-            "timestamp": int(time.time() * 1000),
-            "locked": True,
-            "desktopName": "Winlogon",
-        }
+        return jpg, w, h, w, h, 0, 0, True, "Winlogon"
+
+
+def capture_frame_payload() -> dict:
+    jpg, w, h, sw, sh, cx, cy, is_locked, desk_name = capture_frame_raw()
+    return {
+        "type": "agent:frame",
+        "mimeType": "image/jpeg",
+        "width": w,
+        "height": h,
+        "screenWidth": sw,
+        "screenHeight": sh,
+        "data": base64.b64encode(jpg).decode("ascii"),
+        "cursorX": cx,
+        "cursorY": cy,
+        "timestamp": int(time.time() * 1000),
+        "locked": is_locked,
+        "desktopName": desk_name,
+    }
 
 
 def run_tool(tool: str, args: dict):
@@ -314,10 +327,34 @@ async def connect_once():
         print("Connected! Streaming live screen & listening for MCP commands...")
 
         async def send_frames():
+            prev_jpg = None
+            prev_locked = None
+            last_sent = 0.0
             while True:
-                frame = await asyncio.to_thread(capture_frame_payload)
-                await ws.send(json.dumps(frame))
-                await asyncio.sleep(0.35)
+                t0 = time.monotonic()
+                jpg, w, h, sw, sh, cx, cy, is_locked, desk_name = await asyncio.to_thread(capture_frame_raw)
+                now = time.monotonic()
+                if prev_jpg is None or is_locked != prev_locked or (now - last_sent) >= 1.8 or jpg != prev_jpg:
+                    payload = {
+                        "type": "agent:frame",
+                        "mimeType": "image/jpeg",
+                        "width": w,
+                        "height": h,
+                        "screenWidth": sw,
+                        "screenHeight": sh,
+                        "data": base64.b64encode(jpg).decode("ascii"),
+                        "cursorX": cx,
+                        "cursorY": cy,
+                        "timestamp": int(time.time() * 1000),
+                        "locked": is_locked,
+                        "desktopName": desk_name,
+                    }
+                    await ws.send(json.dumps(payload))
+                    prev_jpg = jpg
+                    prev_locked = is_locked
+                    last_sent = now
+                elapsed = time.monotonic() - t0
+                await asyncio.sleep(max(0.02, 0.065 - elapsed))
 
         async def recv_commands():
             async for raw in ws:

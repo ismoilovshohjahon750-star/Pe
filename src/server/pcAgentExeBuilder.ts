@@ -840,20 +840,38 @@ namespace JarvisPcAgent
 
                 Thread frameThread = new Thread(delegate()
                 {
+                    byte[] prevJpeg = null;
+                    bool prevLocked = false;
+                    long lastSentMs = 0;
                     while (!cts.IsCancellationRequested && ws.State == WebSocketState.Open)
                     {
                         try
                         {
                             NativeWin32.SetThreadExecutionState(NativeWin32.ES_CONTINUOUS | NativeWin32.ES_SYSTEM_REQUIRED);
-                            string payload = BuildFrameJson(json);
-                            SendText(ws, payload, cts.Token);
+                            int fw;
+                            int fh;
+                            int sw;
+                            int sh;
+                            bool isLocked;
+                            string desktopName;
+                            byte[] jpegBytes = CaptureDesktopJpeg(out fw, out fh, out sw, out sh, out isLocked, out desktopName);
+                            long nowMs = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds;
+                            bool changed = prevJpeg == null || isLocked != prevLocked || (nowMs - lastSentMs) >= 1800 || !BytesEqual(prevJpeg, jpegBytes);
+                            if (changed)
+                            {
+                                string payload = BuildFrameJsonFromBytes(json, jpegBytes, fw, fh, sw, sh, isLocked, desktopName, nowMs);
+                                SendText(ws, payload, cts.Token);
+                                prevJpeg = jpegBytes;
+                                prevLocked = isLocked;
+                                lastSentMs = nowMs;
+                            }
                         }
                         catch
                         {
                             try { cts.Cancel(); } catch { }
                             break;
                         }
-                        Thread.Sleep(350);
+                        Thread.Sleep(65);
                     }
                 });
                 frameThread.IsBackground = true;
@@ -970,11 +988,23 @@ namespace JarvisPcAgent
             return null;
         }
 
-        private static byte[] CaptureDesktopJpeg(out int w, out int h, out bool isLocked, out string desktopName)
+        private static bool BytesEqual(byte[] a, byte[] b)
+        {
+            if (a == null || b == null || a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++)
+            {
+                if (a[i] != b[i]) return false;
+            }
+            return true;
+        }
+
+        private static byte[] CaptureDesktopJpeg(out int w, out int h, out int screenW, out int screenH, out bool isLocked, out string desktopName)
         {
             bool switched = DesktopHelper.SwitchThreadToInputDesktop(out desktopName);
             isLocked = DesktopHelper.IsLockDesktopName(desktopName);
             Size sz = GetScreenSizeSafe();
+            screenW = sz.Width;
+            screenH = sz.Height;
             w = sz.Width;
             h = sz.Height;
 
@@ -1001,7 +1031,21 @@ namespace JarvisPcAgent
                             {
                                 using (Bitmap bmp = Image.FromHbitmap(hBmp))
                                 {
-                                    return EncodeJpeg(bmp, 55L);
+                                    if (w > 1280)
+                                    {
+                                        int targetW = 1280;
+                                        int targetH = (int)((long)h * 1280 / w);
+                                        using (Bitmap scaled = new Bitmap(targetW, targetH))
+                                        using (Graphics g = Graphics.FromImage(scaled))
+                                        {
+                                            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+                                            g.DrawImage(bmp, 0, 0, targetW, targetH);
+                                            w = targetW;
+                                            h = targetH;
+                                            return EncodeJpeg(scaled, 48L);
+                                        }
+                                    }
+                                    return EncodeJpeg(bmp, 50L);
                                 }
                             }
                         }
@@ -1038,14 +1082,17 @@ namespace JarvisPcAgent
             }
         }
 
-        private static string BuildFrameJson(JavaScriptSerializer json)
+        private static string BuildFrameJsonFromBytes(
+            JavaScriptSerializer json,
+            byte[] jpegBytes,
+            int w,
+            int h,
+            int screenW,
+            int screenH,
+            bool isLocked,
+            string desktopName,
+            long ts)
         {
-            int w;
-            int h;
-            bool isLocked;
-            string desktopName;
-            byte[] jpegBytes = CaptureDesktopJpeg(out w, out h, out isLocked, out desktopName);
-
             NativeWin32.POINT cursor = new NativeWin32.POINT();
             try
             {
@@ -1055,12 +1102,13 @@ namespace JarvisPcAgent
             {
             }
 
-            long ts = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds;
             Dictionary<string, object> frame = new Dictionary<string, object>();
             frame["type"] = "agent:frame";
             frame["mimeType"] = "image/jpeg";
             frame["width"] = w;
             frame["height"] = h;
+            frame["screenWidth"] = screenW;
+            frame["screenHeight"] = screenH;
             frame["data"] = Convert.ToBase64String(jpegBytes);
             frame["cursorX"] = cursor.X;
             frame["cursorY"] = cursor.Y;

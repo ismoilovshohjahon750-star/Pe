@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Key, Save, X } from 'lucide-react';
+import { Key, Monitor, Save, Settings, X } from 'lucide-react';
+import type { ExecutionTarget, RealAgentStatus } from '../desktop/bridge.ts';
 import {
   LIQUID_CARD,
   LIQUID_ICON_BTN,
@@ -12,10 +13,21 @@ import { authFetch } from '../utils/siteAuthClient.ts';
 
 interface SettingsModalProps {
   open: boolean;
+  executionTarget: ExecutionTarget;
+  realAgentStatus: RealAgentStatus;
+  onSwitchTarget: (target: ExecutionTarget) => void;
+  onOpenPcModal: () => void;
   onClose: () => void;
 }
 
-export function SettingsModal({ open, onClose }: SettingsModalProps) {
+export function SettingsModal({
+  open,
+  executionTarget,
+  realAgentStatus,
+  onSwitchTarget,
+  onOpenPcModal,
+  onClose,
+}: SettingsModalProps) {
   const [geminiText, setGeminiText] = useState('');
   const [groqText, setGroqText] = useState('');
   const [openRouterText, setOpenRouterText] = useState('');
@@ -87,12 +99,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         <div className="px-6 py-4 border-b border-white/15 flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-full backdrop-blur-xl bg-white/[0.1] border border-white/25 shadow-[inset_1px_1px_1px_rgba(255,255,255,0.5)] flex items-center justify-center shrink-0">
-              <Key className="w-4 h-4 text-white/95" strokeWidth={1.75} />
+              <Settings className="w-4 h-4 text-white/95" strokeWidth={1.75} />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-white">API Sozlamalari (.env)</h2>
+              <h2 className="text-base font-semibold text-white">Sozlamalar</h2>
               <p className="text-xs text-white/65 mt-0.5">
-                Gemini, Groq va OpenRouter API kalitlarini kiriting (har bir qatorda yoki vergul bilan).
+                Ekran tanlovi, PC agent va API kalitlarini (.env) boshqarish.
               </p>
             </div>
           </div>
@@ -103,6 +115,70 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
         {/* Body */}
         <form onSubmit={handleSave} className="flex-1 overflow-y-auto win10-scroll p-5 space-y-4 text-xs">
+          {/* Screen Target & PC Agent Controls */}
+          <div className={`${LIQUID_CARD} p-4 space-y-3`}>
+            <div className="font-semibold text-white flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5">
+                <Monitor className="w-3.5 h-3.5 text-cyan-300" strokeWidth={1.75} />
+                <span>Ekran va Haqiqiy PC</span>
+              </span>
+              <span className="text-[10px] text-white/60">
+                {realAgentStatus.connected
+                  ? `Ulangan: ${realAgentStatus.hostname || 'Real PC'}`
+                  : 'Real PC ulanmagan'}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onSwitchTarget('linux')}
+                className={`${LIQUID_PILL_BTN} ${
+                  executionTarget !== 'real-win10'
+                    ? 'bg-cyan-500/25 border-cyan-300/60 text-white'
+                    : ''
+                }`}
+              >
+                <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+                <span className="relative z-10">Linux</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onSwitchTarget('real-win10')}
+                className={`${LIQUID_PILL_BTN} ${
+                  executionTarget === 'real-win10'
+                    ? 'bg-emerald-500/25 border-emerald-300/60 text-white'
+                    : ''
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full relative z-10 ${
+                    realAgentStatus.connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'
+                  }`}
+                  aria-hidden="true"
+                />
+                <span className="relative z-10">Real Windows PC</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onOpenPcModal}
+                className={LIQUID_PILL_BTN}
+              >
+                {realAgentStatus.connected ? (
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 relative z-10" aria-hidden="true" />
+                ) : (
+                  <Monitor className="w-3.5 h-3.5 text-white/95 relative z-10" strokeWidth={1.75} />
+                )}
+                <span className="relative z-10">PC Agent O'rnatish</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 pt-1 text-white/75 font-medium">
+            <Key className="w-3.5 h-3.5 text-white/70" strokeWidth={1.75} />
+            <span>API Kalitlari (.env)</span>
+          </div>
           {message && (
             <div
               className={`p-3 rounded-xl border text-xs ${

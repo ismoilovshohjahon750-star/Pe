@@ -124,7 +124,7 @@ test('normalizeAudioMimeType strips codecs parameters cleanly', () => {
 
 test('isLikelyActionRequest and looksLikeCompletedClaim accurately detect commands and false claims', () => {
   assert.equal(isLikelyActionRequest('Terminalni och va ls yoz'), true);
-  assert.equal(isLikelyActionRequest('Telefonda fonarni yoq'), true);
+  assert.equal(isLikelyActionRequest('Kompyuter qulfini och'), true);
   assert.equal(isLikelyActionRequest('Salom'), false);
   assert.equal(isLikelyActionRequest('Seni kim yaratgan?'), false);
 
