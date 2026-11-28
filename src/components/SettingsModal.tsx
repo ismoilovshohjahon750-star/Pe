@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Key, Monitor, Save, Settings, X } from 'lucide-react';
+import { Key, Monitor, Save, Settings, Unplug, X } from 'lucide-react';
 import type { ExecutionTarget, RealAgentStatus } from '../desktop/bridge.ts';
 import {
   LIQUID_CARD,
@@ -16,6 +16,7 @@ interface SettingsModalProps {
   executionTarget: ExecutionTarget;
   realAgentStatus: RealAgentStatus;
   onSwitchTarget: (target: ExecutionTarget) => void;
+  onDisconnectPc: () => Promise<boolean>;
   onOpenPcModal: () => void;
   onClose: () => void;
 }
@@ -25,6 +26,7 @@ export function SettingsModal({
   executionTarget,
   realAgentStatus,
   onSwitchTarget,
+  onDisconnectPc,
   onOpenPcModal,
   onClose,
 }: SettingsModalProps) {
@@ -32,6 +34,7 @@ export function SettingsModal({
   const [groqText, setGroqText] = useState('');
   const [openRouterText, setOpenRouterText] = useState('');
   const [saving, setSaving] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -172,7 +175,42 @@ export function SettingsModal({
                 )}
                 <span className="relative z-10">PC Agent O'rnatish</span>
               </button>
+
+              <button
+                type="button"
+                disabled={(!realAgentStatus.connected && !realAgentStatus.reconnecting) || disconnecting}
+                onClick={() => {
+                  if (disconnecting) return;
+                  setDisconnecting(true);
+                  void onDisconnectPc()
+                    .then((ok) => {
+                      setMessage(
+                        ok
+                          ? 'Ulangan PC muvaffaqiyatli ajratildi. Qayta ulash uchun JarvisPcAgent-Setup.bat faylini qayta ishga tushiring.'
+                          : 'PC ni ajratishda xatolik yuz berdi.',
+                      );
+                    })
+                    .finally(() => setDisconnecting(false));
+                }}
+                aria-label="Ulangan PC ni ajratish"
+                title="Ulangan PC ni to'liq ajratish (qayta ulash uchun .bat ni qayta ishga tushirish kerak)"
+                className={`${LIQUID_PILL_BTN} ${
+                  realAgentStatus.connected || realAgentStatus.reconnecting
+                    ? 'bg-rose-500/25 supports-[backdrop-filter]:bg-rose-500/25 !border-rose-400/60 hover:bg-rose-500/35 hover:supports-[backdrop-filter]:bg-rose-500/35 text-rose-50'
+                    : 'opacity-45 cursor-not-allowed'
+                }`}
+              >
+                <Unplug className="w-3.5 h-3.5 relative z-10" strokeWidth={1.75} />
+                <span className="relative z-10">
+                  {disconnecting ? 'Ajratilmoqda...' : 'PC ni ajratish'}
+                </span>
+              </button>
             </div>
+            {(realAgentStatus.connected || realAgentStatus.reconnecting) && (
+              <p className="text-[11px] text-white/60 leading-relaxed">
+                “PC ni ajratish” bosilganda Windows xizmati va agent jarayoni to‘xtatiladi; qayta ulash uchun <span className="font-mono text-white/85">JarvisPcAgent-Setup.bat</span> ni qayta ishga tushiring.
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-2 pt-1 text-white/75 font-medium">

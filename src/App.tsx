@@ -251,6 +251,23 @@ export default function App() {
     };
   };
 
+  const disconnectRealPc = async (): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/real-win10/disconnect', { method: 'POST' });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        status?: RealAgentStatus;
+        target?: ExecutionTarget;
+      };
+      setRealAgentFrame(null);
+      setRealAgentStatus(data.status || createInitialRealAgentStatus());
+      setExecutionTarget(data.target || 'linux');
+      return Boolean(res.ok && data.ok !== false);
+    } catch {
+      return false;
+    }
+  };
+
   const showingRealPc = executionTarget === 'real-win10';
 
   return (
@@ -363,6 +380,7 @@ export default function App() {
         status={realAgentStatus}
         executionTarget={executionTarget}
         onSwitchTarget={(t) => void switchTarget(t)}
+        onDisconnectPc={disconnectRealPc}
         onClose={() => setPcModalOpen(false)}
       />
 
@@ -376,6 +394,7 @@ export default function App() {
         executionTarget={executionTarget}
         realAgentStatus={realAgentStatus}
         onSwitchTarget={(t) => void switchTarget(t)}
+        onDisconnectPc={disconnectRealPc}
         onOpenPcModal={() => {
           setSettingsModalOpen(false);
           setPcModalOpen(true);

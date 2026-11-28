@@ -114,6 +114,28 @@ async function startServer() {
     });
   });
 
+  app.post('/api/real-win10/disconnect', async (_req, res) => {
+    try {
+      const result = await realWin10Bridge.disconnectAgent();
+      desktopStore.logActivity(
+        'system',
+        'real_win10_agent',
+        'Real Windows PC disconnected',
+        'Agent stopped; run JarvisPcAgent-Setup.bat again to reconnect',
+        'ok',
+        2,
+      );
+      res.json({
+        ok: true,
+        ...result,
+        status: realWin10Bridge.getStatus(),
+        target: realWin10Bridge.getExecutionTarget(),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  });
+
   app.get('/api/linux/status', (_req, res) => {
     res.json({
       status: realLinuxDesktop.getStatus(),
@@ -213,6 +235,7 @@ async function startServer() {
   });
 
   app.get('/api/real-win10-agent.ps1', (req, res) => {
+    realWin10Bridge.allowReconnect();
     const fwdProto = String(req.headers['x-forwarded-proto'] || '')
       .split(',')[0]
       .trim()
@@ -228,6 +251,7 @@ async function startServer() {
   });
 
   app.get('/api/real-pc-agent.py', (req, res) => {
+    realWin10Bridge.allowReconnect();
     const fwdProto = String(req.headers['x-forwarded-proto'] || '')
       .split(',')[0]
       .trim()
@@ -243,6 +267,7 @@ async function startServer() {
   });
 
   app.get('/api/real-pc-agent.cs', (req, res) => {
+    realWin10Bridge.allowReconnect();
     const fwdProto = String(req.headers['x-forwarded-proto'] || '')
       .split(',')[0]
       .trim()
@@ -258,6 +283,7 @@ async function startServer() {
   });
 
   app.get('/api/real-pc-agent-builder.bat', (req, res) => {
+    realWin10Bridge.allowReconnect();
     const fwdProto = String(req.headers['x-forwarded-proto'] || '')
       .split(',')[0]
       .trim()
@@ -586,6 +612,11 @@ async function startServer() {
         wss.emit('connection', ws, request);
       });
     } else if (urlPath === '/agent-ws') {
+      if (realWin10Bridge.isManuallyDisconnected()) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       const state = desktopStore.getState();
       if (state.authEnabled) {
         const parsed = new URL(request.url || '/', 'http://localhost');

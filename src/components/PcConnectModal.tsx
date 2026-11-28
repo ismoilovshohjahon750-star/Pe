@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Copy, Download, Monitor, MonitorUp, Square, Terminal, X } from 'lucide-react';
+import { Check, Copy, Download, Monitor, Terminal, Unplug, X } from 'lucide-react';
 import type { ExecutionTarget, RealAgentStatus } from '../desktop/bridge.ts';
 import { copyTextCrossBrowser } from '../utils/clipboard.ts';
 import {
@@ -16,6 +16,7 @@ interface PcConnectModalProps {
   status: RealAgentStatus;
   executionTarget: ExecutionTarget;
   onSwitchTarget: (target: ExecutionTarget) => void;
+  onDisconnectPc?: () => Promise<boolean>;
   onClose: () => void;
 }
 
@@ -24,9 +25,11 @@ export function PcConnectModal({
   status,
   executionTarget,
   onSwitchTarget,
+  onDisconnectPc,
   onClose,
 }: PcConnectModalProps) {
   const [copiedStep, setCopiedStep] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   if (!open) return null;
 
@@ -100,8 +103,8 @@ export function PcConnectModal({
               </div>
             </div>
 
-            {status.connected && (
-              <div className="flex items-center gap-2">
+            {(status.connected || status.reconnecting) && (
+              <div className="flex flex-wrap items-center gap-2">
                 {executionTarget === 'real-win10' ? (
                   <button
                     type="button"
@@ -123,6 +126,25 @@ export function PcConnectModal({
                     className={LIQUID_PILL_BTN}
                   >
                     <span className="relative z-10">Haqiqiy PC ekranini ochish</span>
+                  </button>
+                )}
+
+                {onDisconnectPc && (
+                  <button
+                    type="button"
+                    disabled={disconnecting}
+                    onClick={() => {
+                      if (disconnecting) return;
+                      setDisconnecting(true);
+                      void onDisconnectPc().finally(() => setDisconnecting(false));
+                    }}
+                    aria-label="Ulangan PC ni ajratish"
+                    className={`${LIQUID_PILL_BTN} bg-rose-500/25 supports-[backdrop-filter]:bg-rose-500/25 !border-rose-400/60 hover:bg-rose-500/35 hover:supports-[backdrop-filter]:bg-rose-500/35 text-rose-50`}
+                  >
+                    <Unplug className="w-3.5 h-3.5 relative z-10" strokeWidth={1.75} />
+                    <span className="relative z-10">
+                      {disconnecting ? 'Ajratilmoqda...' : 'PC ni ajratish'}
+                    </span>
                   </button>
                 )}
               </div>

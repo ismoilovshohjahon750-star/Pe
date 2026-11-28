@@ -18,6 +18,8 @@ test('buildCSharpPcAgentSource produces C# 5 compatible service+session agent wi
   assert.ok(cs.includes('LockWorkStation'));
   assert.ok(cs.includes('SetThreadExecutionState'));
   assert.ok(cs.includes('WTSGetActiveConsoleSessionId'));
+  assert.ok(cs.includes('JarvisPcAgentShutdownEvent'));
+  assert.ok(cs.includes('agent_disconnect'));
   assert.ok(cs.includes('while (true)'));
   // Ensure no C# 6+ syntax that would fail on .NET 4.x csc.exe
   assert.equal(/\$\"/.test(cs), false);
@@ -35,13 +37,15 @@ test('buildExeBuilderBatchScript builds with System.ServiceProcess and installs 
   assert.ok(bat.includes('%ProgramData%'));
 });
 
-test('buildPythonPcAgent includes Win+L lock, keepalive, locked flag, and fast 1s auto-reconnect loop', () => {
+test('buildPythonPcAgent includes Win+L lock, keepalive, locked flag, disconnect, and fast 1s auto-reconnect loop', () => {
   const py = buildPythonPcAgent('wss://example.com/agent-ws', 'abc');
   assert.ok(py.includes('wss://example.com/agent-ws?token=abc'));
   assert.ok(py.includes('render_locked_frame'));
   assert.ok(py.includes('PC QULFLANGAN (Win+L)'));
   assert.ok(py.includes('SetThreadExecutionState'));
   assert.ok(py.includes('LockWorkStation'));
+  assert.ok(py.includes('agent_disconnect'));
+  assert.ok(py.includes('ShutdownRequested'));
   assert.ok(py.includes('"locked"'));
   assert.ok(py.includes('reconnecting in 1s'));
 });

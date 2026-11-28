@@ -19,6 +19,7 @@ class RealWin10Bridge {
   private target: ExecutionTarget = 'linux';
   private frameTimes: number[] = [];
   private disconnectGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  private manualDisconnectBlocked = false;
 
   private pending = new Map<
     string,
@@ -45,6 +46,14 @@ class RealWin10Bridge {
     this.target = next;
     for (const fn of this.targetListeners) fn(this.target);
     return this.target;
+  }
+
+  allowReconnect(): void {
+    this.manualDisconnectBlocked = false;
+  }
+
+  isManuallyDisconnected(): boolean {
+    return this.manualDisconnectBlocked;
   }
 
   onStatus(fn: StatusListener): () => void {
@@ -74,6 +83,7 @@ class RealWin10Bridge {
   }
 
   attachAgent(ws: WebSocket): void {
+    this.manualDisconnectBlocked = false;
     this.clearGraceTimer();
     const previousSocket = this.agentSocket;
     this.agentSocket = ws;
@@ -193,6 +203,88 @@ class RealWin10Bridge {
         this.disconnectGraceTimer.unref?.();
       }
     });
+  }
+
+  async disconnectAgent(): Promise<{ disconnected: boolean; hadAgent: boolean; requireBatRestart: boolean }> {
+    this.clearGraceTimer();
+    const socket = this.agentSocket;
+    const hadAgent = Boolean(socket || this.status.connected || this.status.reconnecting);
+    let agentStoppedSelf = false;
+
+    if (socket && socket.readyState === 1 /* WebSocket.OPEN */) {
+      const requestId = `disconnect-${Date.now().toString(36)}`;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          this.pending.delete(requestId);
+          resolve();
+        }, 1200);
+        this.pending.set(requestId, {
+          resolve: () => {
+            clearTimeout(timer);
+            agentStoppedSelf = true;
+            resolve();
+          },
+          reject: () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          timer,
+        });
+        try {
+          socket.send(
+            JSON.stringify({
+              type: 'cmd:exec',
+              requestId,
+              tool: 'agent_disconnect',
+              args: {},
+            }),
+          );
+        } catch {
+          clearTimeout(timer);
+          this.pending.delete(requestId);
+          resolve();
+        }
+      });
+    }
+
+    // Always require re-running .bat / downloading agent before reconnecting after manual disconnect
+    this.manualDisconnectBlocked = hadAgent;
+
+    this.agentSocket = null;
+    for (const [reqId, waiter] of this.pending.entries()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error('Real Windows PC disconnected by user'));
+      this.pending.delete(reqId);
+    }
+
+    if (socket) {
+      try {
+        socket.close(1000, 'Disconnected by user');
+      } catch {
+        // ignore
+      }
+      setTimeout(() => {
+        try {
+          if (socket.readyState !== 3 /* WebSocket.CLOSED */) {
+            socket.terminate();
+          }
+        } catch {
+          // ignore
+        }
+      }, 250).unref?.();
+    }
+
+    this.frameTimes = [];
+    this.latestFrame = null;
+    this.status = createInitialRealAgentStatus();
+    this.emitStatus();
+    this.setExecutionTarget('linux');
+
+    return {
+      disconnected: true,
+      hadAgent,
+      requireBatRestart: true,
+    };
   }
 
   async executeOnAgent(tool: string, args: Record<string, unknown>): Promise<unknown> {

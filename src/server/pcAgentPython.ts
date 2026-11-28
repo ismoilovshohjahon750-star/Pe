@@ -307,6 +307,10 @@ def run_tool(tool: str, args: dict):
     raise ValueError(f"Unsupported tool: {tool}")
 
 
+class ShutdownRequested(Exception):
+    pass
+
+
 async def connect_once():
     keep_windows_awake()
     print(f"Connecting real PC to {WS_URI} ...")
@@ -359,10 +363,22 @@ async def connect_once():
         async def recv_commands():
             async for raw in ws:
                 msg = json.loads(raw)
+                if msg.get("type") == "agent:shutdown":
+                    raise ShutdownRequested("Disconnected by user")
                 if msg.get("type") == "cmd:exec":
                     req_id = msg.get("requestId")
+                    tool_name = msg.get("tool", "")
+                    if tool_name == "agent_disconnect":
+                        await ws.send(json.dumps({
+                            "type": "agent:result",
+                            "requestId": req_id,
+                            "ok": True,
+                            "data": "Disconnected PC agent",
+                        }))
+                        await ws.close()
+                        raise ShutdownRequested("Disconnected by user")
                     try:
-                        out = await asyncio.to_thread(run_tool, msg.get("tool", ""), msg.get("args") or {})
+                        out = await asyncio.to_thread(run_tool, tool_name, msg.get("args") or {})
                         await ws.send(json.dumps({
                             "type": "agent:result",
                             "requestId": req_id,
@@ -384,6 +400,9 @@ async def main():
     while True:
         try:
             await connect_once()
+        except ShutdownRequested:
+            print("Disconnected by user. Run the agent again to reconnect.")
+            break
         except asyncio.CancelledError:
             raise
         except Exception as exc:

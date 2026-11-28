@@ -581,6 +581,7 @@ namespace JarvisPcAgent
         private volatile bool _stopping;
         private Process _childProcess;
         private uint _childSessionId = 0xFFFFFFFF;
+        private EventWaitHandle _shutdownEvent;
 
         public AgentWindowsService()
         {
@@ -590,6 +591,15 @@ namespace JarvisPcAgent
         protected override void OnStart(string[] args)
         {
             _stopping = false;
+            try
+            {
+                _shutdownEvent = new EventWaitHandle(false, EventResetMode.ManualReset, "Global\\\\JarvisPcAgentShutdownEvent");
+                _shutdownEvent.Reset();
+            }
+            catch
+            {
+                _shutdownEvent = null;
+            }
             _supervisorThread = new Thread(SupervisorLoop);
             _supervisorThread.IsBackground = true;
             _supervisorThread.Start();
@@ -599,6 +609,11 @@ namespace JarvisPcAgent
         {
             _stopping = true;
             KillChildProcess();
+            if (_shutdownEvent != null)
+            {
+                try { _shutdownEvent.Close(); } catch { }
+                _shutdownEvent = null;
+            }
         }
 
         private void KillChildProcess()
@@ -624,6 +639,22 @@ namespace JarvisPcAgent
 
             while (!_stopping)
             {
+                if (_shutdownEvent != null)
+                {
+                    try
+                    {
+                        if (_shutdownEvent.WaitOne(0))
+                        {
+                            _stopping = true;
+                            KillChildProcess();
+                            try { Stop(); } catch { }
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
                 try
                 {
                     uint activeSid = NativeWin32.WTSGetActiveConsoleSessionId();
@@ -736,6 +767,33 @@ namespace JarvisPcAgent
         private static readonly SemaphoreSlim SendLock = new SemaphoreSlim(1, 1);
         private static readonly InputWorker Input = new InputWorker();
         private static Mutex _singleInstanceMutex;
+        private static volatile bool _shutdownRequested = false;
+
+        private static void RequestPermanentShutdown()
+        {
+            _shutdownRequested = true;
+            try
+            {
+                EventWaitHandle ev = EventWaitHandle.OpenExisting("Global\\\\JarvisPcAgentShutdownEvent");
+                ev.Set();
+                ev.Close();
+            }
+            catch
+            {
+            }
+            try
+            {
+                ServiceController sc = new ServiceController("JarvisPcAgentService");
+                if (sc.Status == ServiceControllerStatus.Running || sc.Status == ServiceControllerStatus.StartPending)
+                {
+                    sc.Stop();
+                }
+                sc.Close();
+            }
+            catch
+            {
+            }
+        }
 
         private static void Main(string[] args)
         {
@@ -798,10 +856,12 @@ namespace JarvisPcAgent
             int backoffMs = 500;
             while (true)
             {
+                if (_shutdownRequested) break;
                 try
                 {
                     NativeWin32.SetThreadExecutionState(NativeWin32.ES_CONTINUOUS | NativeWin32.ES_SYSTEM_REQUIRED);
                     bool connected = RunSessionLoop();
+                    if (_shutdownRequested) break;
                     if (connected)
                     {
                         backoffMs = 500;
@@ -810,6 +870,7 @@ namespace JarvisPcAgent
                 catch
                 {
                 }
+                if (_shutdownRequested) break;
                 Thread.Sleep(backoffMs);
                 backoffMs = Math.Min(3000, backoffMs * 2);
             }
@@ -900,7 +961,7 @@ namespace JarvisPcAgent
                         while (!res.EndOfMessage);
 
                         string rawMsg = Encoding.UTF8.GetString(ms.ToArray());
-                        HandleIncomingMessage(ws, json, rawMsg, cts.Token);
+                        HandleIncomingMessage(ws, json, rawMsg, cts);
                     }
                 }
 
@@ -909,12 +970,20 @@ namespace JarvisPcAgent
             return established;
         }
 
-        private static void HandleIncomingMessage(ClientWebSocket ws, JavaScriptSerializer json, string rawMsg, CancellationToken token)
+        private static void HandleIncomingMessage(ClientWebSocket ws, JavaScriptSerializer json, string rawMsg, CancellationTokenSource cts)
         {
             Dictionary<string, object> msg = json.Deserialize<Dictionary<string, object>>(rawMsg);
             if (msg == null) return;
             object typeObj;
-            if (!msg.TryGetValue("type", out typeObj) || Convert.ToString(typeObj) != "cmd:exec") return;
+            if (!msg.TryGetValue("type", out typeObj)) return;
+            string msgType = Convert.ToString(typeObj);
+            if (msgType == "agent:shutdown")
+            {
+                RequestPermanentShutdown();
+                try { cts.Cancel(); } catch { }
+                return;
+            }
+            if (msgType != "cmd:exec") return;
 
             string reqId = msg.ContainsKey("requestId") ? Convert.ToString(msg["requestId"]) : "";
             string tool = msg.ContainsKey("tool") ? Convert.ToString(msg["tool"]) : "";
@@ -924,6 +993,28 @@ namespace JarvisPcAgent
                 args = (Dictionary<string, object>)msg["args"];
             }
 
+            if (tool == "agent_disconnect")
+            {
+                Dictionary<string, object> bye = new Dictionary<string, object>();
+                bye["type"] = "agent:result";
+                bye["requestId"] = reqId;
+                bye["ok"] = true;
+                bye["data"] = "Disconnected PC agent";
+                try
+                {
+                    SendText(ws, json.Serialize(bye), cts.Token);
+                }
+                catch
+                {
+                }
+                RequestPermanentShutdown();
+                try { cts.Cancel(); } catch { }
+                try { ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Disconnected by user", CancellationToken.None).GetAwaiter().GetResult(); } catch { }
+                Environment.Exit(0);
+                return;
+            }
+
+            CancellationToken token = cts.Token;
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Dictionary<string, object> reply = new Dictionary<string, object>();
